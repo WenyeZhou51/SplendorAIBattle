@@ -458,10 +458,36 @@ Vue.component('player-display', {
             return '#ffffee';
         },
         player_type: function() {
+            // Access the Vue root instance to get the bot types
+            const app = this.$root;
+            
             if (this.is_human) {
-                return 'you';
+                return 'human';
+            } else if (app.game_mode === 'bot_vs_bot') {
+                // In bot vs bot mode, show which bot type
+                const botType = this.player.number === 1 ? app.player1_bot_type : app.player2_bot_type;
+                
+                switch(botType) {
+                    case 'neural':
+                        return 'Neural Bot';
+                    case 'greedy':
+                        return 'Greedy Bot';
+                    case 'random':
+                        return 'Random Bot';
+                    case 'aggro':
+                        return 'Aggro Bot';
+                    default:
+                        return 'AI';
+                }
+            } else {
+                return 'AI';
             }
-            return 'AI'
+        },
+        player_class: function() {
+            return {
+                'player-display': true,
+                'current-player': this.is_current_player
+            };
         },
         show_card_buttons: function() {
             if (!this.is_current_player) {
@@ -474,7 +500,7 @@ Vue.component('player-display', {
         }
     },
     template: `
-<div class="player-display"
+<div v-bind:class="player_class"
      v-bind:style="{borderWidth: border_width,borderColor: border_colour,backgroundColor: background_colour}">
 <h3>P{{ player.number }} ({{ player_type }}): {{ player.score }} points, {{ player_num_gems }} gems</h3>
     <gems-table v-bind:gems="player.gems"
@@ -495,7 +521,7 @@ Vue.component('player-display', {
     </nobles-display>
 </div>
 `
-})
+});
 
 Vue.component('cards-display', {
     props: ['cards', 'name', 'tier', 'player', 'show_reserve_button', 'num_cards', 'show_card_buttons'],
@@ -660,16 +686,14 @@ Vue.component('nobles-display', {
 
 Vue.component('ai-move-status', {
     props: ['player_index', 'num_possible_moves'],
-    watch: {
-        player_index: function (val) {
-            this.$emit('on_player_index');
-        }
+    mounted: function() {
+        this.$emit('on_player_index')
     },
     template: `
 <div class="ai-move-status">
-    <h3>Player {{ player_index + 1 }} (AI) thinking: {{ num_possible_moves }} possible moves.</h3>
-    <div class="loader-positioner">
-        <div class="loader"></div>
+    <div>
+        <h3>AI Player {{ player_index + 1 }} thinking...</h3>
+        <p>Evaluating {{ num_possible_moves }} possible moves</p>
     </div>
 </div>
 `
@@ -683,11 +707,52 @@ Vue.component('winner-display', {
                 return -1;
             }
             return this.players[this.winner_index].score;
+        },
+        winner_name: function() {
+            if (this.winner_index === null) {
+                return '';
+            }
+            
+            // Get access to root Vue instance
+            const app = this.$root;
+            
+            if (app.game_mode === 'bot_vs_bot') {
+                // In bot vs bot mode, show which bot won
+                const botType = this.winner_index === 0 ? app.player1_bot_type : app.player2_bot_type;
+                let botName = '';
+                
+                switch(botType) {
+                    case 'neural':
+                        botName = 'Neural Bot';
+                        break;
+                    case 'greedy':
+                        botName = 'Greedy Bot';
+                        break;
+                    case 'random':
+                        botName = 'Random Bot';
+                        break;
+                    case 'aggro':
+                        botName = 'Aggro Bot';
+                        break;
+                    default:
+                        botName = 'AI';
+                        break;
+                }
+                
+                return `Player ${this.winner_index + 1} (${botName})`;
+            } else {
+                // In human vs AI mode, show if human or AI won
+                if (app.human_player_indices.includes(this.winner_index)) {
+                    return `Player ${this.winner_index + 1} (Human)`;
+                } else {
+                    return `Player ${this.winner_index + 1} (AI)`;
+                }
+            }
         }
     },
     template: `
 <div class="winner-display">
-    <h3>Player {{ winner_index + 1 }} wins with {{ winning_score }} points!
+    <h3>{{ winner_name }} wins with {{ winning_score }} points!
     </h3>
 
     <button v-on:click="$emit('reset')">
@@ -698,67 +763,54 @@ Vue.component('winner-display', {
 });
 
 
-function move_to_html(move) {
-    let action = move['action'];
-    let html = '';
+function move_to_description(move) {
+    let action = move.action;
+    
     if (action === 'gems') {
-        html += 'took gems: '
-        let gems = move['gems'];
+        let gems_taken = [];
         for (let colour of all_colours) {
-            if (colour in gems && gems[colour] != 0) {
-                let number = gems[colour];
-                html += '<span class="' + colour + '">' + number + '</span>&nbsp;';
+            if (move.gems[colour] > 0) {
+                gems_taken.push(`${move.gems[colour]} ${colour}`);
             }
         }
+        return `Took gems: ${gems_taken.join(', ')}`;
     } else if (action === 'reserve') {
-        let card = move['card'];
-        html += 'reserved ' + card.points + ' point <span class="' + card.colour + '">' + card.colour + '</span> card costing '
-        for (let colour of colours) {
-            if (colour in card.gems && card.gems[colour] != 0) {
-                let number = card.gems[colour];
-                html += '<span class="' + colour +'">' + number + '</span>&nbsp;';
-            }
-        }
-        html += 'from tier ' + move['tier'];
-        if (move['gems']['gold'] != 0) {
-            html += ', gaining <span class="gold">' + move['gems']['gold'] + '</span>';
-        }
-        //     + ' paying ';
-        // let gems = move['gems'];
-        // for (let colour of all_colours) {
-        //     if (colour in gems && gems[colour] != 0) {
-        //         let number = gems[colour];
-        //         html += '<span class="' + colour +'">' + number + '</span> ';
-        //     }
-        // }
-    } else if (action === 'buy_reserved' || action === 'buy_available') {
-        let card = move['card'];
-        html += 'bought ' + card.points + ' point <span class="' + card.colour + '">' + card.colour + '</span> card costing '
-        for (let colour of colours) {
-            if (colour in card.gems && card.gems[colour] != 0) {
-                let number = card.gems[colour];
-                html += '<span class="' + colour +'">' + number + '</span>&nbsp;';
-            }
-        }
-        if (action === 'buy_reserved') {
-            html += 'from hand for ';
+        if (move.card) {
+            return `Reserved a tier ${move.tier} ${move.card.colour} card worth ${move.card.points} points` + 
+                   (move.gems.gold > 0 ? ` and received 1 gold gem` : ``);
         } else {
-            html += 'from tier ' + move['tier'] + ' for ';
+            return `Reserved a tier ${move.tier} card` + 
+                   (move.gems.gold > 0 ? ` and received 1 gold gem` : ``);
         }
-        let cost = move['gems'];
-        let was_free = true;
-        for (let colour of all_colours) {
-            if (colour in cost && cost[colour] != 0) {
-                let number = cost[colour];
-                was_free = false;
-                html += '<span class="' + colour +'">' + number + '</span>&nbsp;';
+    } else if (action === 'buy_available') {
+        if (move.card) {
+            let cost_parts = [];
+            for (let colour of all_colours) {
+                if (move.gems[colour] > 0) {
+                    cost_parts.push(`${move.gems[colour]} ${colour}`);
+                }
             }
+            const cost_string = cost_parts.length > 0 ? ` for ${cost_parts.join(', ')}` : ` for free`;
+            return `Bought a tier ${move.tier} ${move.card.colour} card worth ${move.card.points} points${cost_string}`;
+        } else {
+            return `Bought a tier ${move.tier} card`;
         }
-        if (was_free) {
-            html += 'free';
+    } else if (action === 'buy_reserved') {
+        if (move.card) {
+            let cost_parts = [];
+            for (let colour of all_colours) {
+                if (move.gems[colour] > 0) {
+                    cost_parts.push(`${move.gems[colour]} ${colour}`);
+                }
+            }
+            const cost_string = cost_parts.length > 0 ? ` for ${cost_parts.join(', ')}` : ` for free`;
+            return `Bought a reserved ${move.card.colour} card worth ${move.card.points} points${cost_string}`;
+        } else {
+            return `Bought a reserved card`;
         }
     }
-    return html;
+    
+    return "Unknown move";
 }
 
 Vue.component('moves-log-display', {
@@ -771,8 +823,11 @@ Vue.component('moves-log-display', {
                 let round = math.floor(i / 2) + 1;
                 let player = (i % 2) + 1;
 
-                let html = move_to_html(move);
-                strs.push('<span class="bold">R' + round + ' P' + player + ':</span> ' + html);
+                let description = move_to_description(move);
+                strs.push({
+                    html: '<span class="bold">R' + round + ' P' + player + ':</span> ' + description,
+                    isLatest: i === this.moves.length - 1
+                });
             }
             return strs;
         }
@@ -782,7 +837,10 @@ Vue.component('moves-log-display', {
      v-if="moves.length > 0">
     <h3>Moves log:</h3>
     <ul>
-        <li v-for="move in move_strings"><span v-html="move"></span></li>
+        <li v-for="move in move_strings" 
+            v-bind:class="{ 'latest-move': move.isLatest }">
+            <span v-html="move.html"></span>
+        </li>
     </ul>
 </div>
 `
@@ -807,6 +865,13 @@ var app = new Vue({
         winner_index: null,
         num_possible_moves: 0,
         debug_checked: false,
+        game_mode: 'human_vs_ai',  // New: game mode selector
+        bot_advance_mode: 'manual', // New: bot advancement mode
+        auto_advance_delay: 0.2,   // New: delay for auto advancement
+        last_move: null,           // New: store the last move for display
+        player1_bot_type: 'neural', // New: bot type for player 1
+        player2_bot_type: 'greedy', // New: bot type for player 2
+        player_bot_instances: [],   // New: stores the bot instances for each player
         gems_selected: {'white': 0,
                         'blue': 0,
                         'green': 0,
@@ -860,21 +925,26 @@ var app = new Vue({
         reset: function() {
             this.human_player_indices = [random_player_index()];
             this.state = new GameState();
-            // this.player_type = 'human';
             this.discarding = false;
             this.winner_index = null;
+            this.last_move = null;
 
             for (let colour of all_colours) {
                 this.gems_selected[colour] = 0;
             }
-            if (this.player_type === 'ai') {
-                this.schedule_ai_move();
+            
+            if (this.game_mode === 'bot_vs_bot' || 
+                (this.game_mode === 'human_vs_ai' && this.player_type === 'ai')) {
+                if (this.game_mode === 'bot_vs_bot' && this.bot_advance_mode === 'auto') {
+                    this.schedule_auto_ai_move();
+                } else if (this.game_mode === 'human_vs_ai') {
+                    this.schedule_ai_move();
+                }
             }
-        } ,
+        },
         on_player_index: function() {
             let winner = this.state.has_winner();
-            if (this.state.current_player_index === 0 &&
-                !(winner === null)) {
+            if (!(winner === null)) {
                 this.winner_index = winner;
                 return;
             }
@@ -883,7 +953,13 @@ var app = new Vue({
                 window.clearTimeout(this.scheduled_move_func);
                 this.scheduled_move_func = null;
             }
-            if (this.player_type === 'ai') {
+            
+            if (this.game_mode === 'bot_vs_bot') {
+                if (this.bot_advance_mode === 'auto') {
+                    this.schedule_auto_ai_move();
+                }
+                // In manual mode, we wait for user to click "Next Move"
+            } else if (this.game_mode === 'human_vs_ai' && this.player_type === 'ai') {
                 this.schedule_ai_move();
             }
 
@@ -897,9 +973,17 @@ var app = new Vue({
             window.setTimeout(this.do_ai_move, 50);
         },
         nn_ai_move: function() {
-            console.log('Doing nn ai move');
-            let move = ai.make_move(this.state);
-            console.log('ai move is', move);
+            console.log('Doing AI move');
+            
+            // Use the appropriate bot for the current player
+            const bot = this.getBotForCurrentPlayer();
+            const botType = this.state.current_player_index === 0 ? this.player1_bot_type : this.player2_bot_type;
+            console.log(`Using ${botType} bot for player ${this.state.current_player_index + 1}`);
+            
+            let move = bot.make_move(this.state);
+            console.log('AI move is', move);
+            this.last_move = move;
+            this.last_move_description = move_to_description(move);
             this.state.make_move(move);
         },
         do_ai_move: function() {
@@ -907,6 +991,19 @@ var app = new Vue({
             // this.random_move();
             if (this.player_type === 'ai') {
                 this.nn_ai_move();
+                
+                // Check if there's a winner after the AI makes a move
+                const winner = this.state.has_winner();
+                if (winner !== null) {
+                    this.winner_index = winner;
+                    console.log(`Player ${winner + 1} has won the game!`);
+                    
+                    // Cancel any pending auto moves
+                    if (this.scheduled_move_func !== null) {
+                        window.clearTimeout(this.scheduled_move_func);
+                        this.scheduled_move_func = null;
+                    }
+                }
             }
         },
         do_move_gems: function(info) {
@@ -962,6 +1059,19 @@ var app = new Vue({
             } else {
                 this.discarding = false;
                 this.state.increment_player();
+                
+                // Check if there's a winner after incrementing player
+                const winner = this.state.has_winner();
+                if (winner !== null) {
+                    this.winner_index = winner;
+                    console.log(`Player ${winner + 1} has won the game!`);
+                    
+                    // Cancel any pending auto moves
+                    if (this.scheduled_move_func !== null) {
+                        window.clearTimeout(this.scheduled_move_func);
+                        this.scheduled_move_func = null;
+                    }
+                }
             }
         },
         do_discard_gems: function() {
@@ -973,17 +1083,92 @@ var app = new Vue({
                 this.gems_discarded[colour] = 0;
             }
             this.check_if_discarding();
+        },
+        // Manual advancement for bot vs bot mode
+        do_manual_ai_move: function() {
+            this.do_ai_move();
+            
+            // Only highlight if there's no winner yet
+            if (this.winner_index === null) {
+                this.highlight_current_player();
+            }
+        },
+        
+        // Auto advancement for bot vs bot mode
+        schedule_auto_ai_move: function() {
+            // Don't schedule new moves if there's a winner
+            if (this.winner_index !== null) {
+                return;
+            }
+            
+            this.num_possible_moves = this.state.get_valid_moves(this.state.current_player_index).length;
+            this.scheduled_move_func = window.setTimeout(() => {
+                this.do_ai_move();
+                
+                // Only highlight and schedule next move if there's no winner
+                if (this.winner_index === null) {
+                    this.highlight_current_player();
+                }
+            }, this.auto_advance_delay * 1000);
+        },
+        
+        // Highlight the current player's section
+        highlight_current_player: function() {
+            // Remove existing highlights
+            document.querySelectorAll('.move-highlight').forEach(el => {
+                el.classList.remove('move-highlight');
+            });
+            
+            // Add highlight to current player
+            const playerElements = document.querySelectorAll('.player-display');
+            if (playerElements && playerElements.length > this.state.current_player_index) {
+                playerElements[this.state.current_player_index].classList.add('move-highlight');
+            }
+            
+            // Also highlight the last move in the log if available
+            if (this.last_move) {
+                setTimeout(() => {
+                    const moveLogItems = document.querySelectorAll('.moves-log-display li');
+                    if (moveLogItems && moveLogItems.length > 0) {
+                        const lastMoveItem = moveLogItems[moveLogItems.length - 1];
+                        lastMoveItem.classList.add('move-highlight');
+                    }
+                }, 100); // Small delay to ensure the DOM has updated
+            }
+        },
+        
+        // Get the appropriate bot instance for the current player
+        getBotForCurrentPlayer: function() {
+            const playerIndex = this.state.current_player_index;
+            const botType = playerIndex === 0 ? this.player1_bot_type : this.player2_bot_type;
+            
+            switch(botType) {
+                case 'neural':
+                    return ai_neural;
+                case 'greedy':
+                    return ai_greedy;
+                case 'random':
+                    return ai_random;
+                case 'aggro':
+                    return ai_aggro;
+                default:
+                    return ai_neural;  // Default to neural
+            }
         }
     },
     computed: {
         player_type: function() {
-            // return 'human';
-            for (let index of this.human_player_indices) {
-                if (index === this.state.current_player_index) {
-                    return 'human';
+            if (this.game_mode === 'human_vs_ai') {
+                for (let index of this.human_player_indices) {
+                    if (index === this.state.current_player_index) {
+                        return 'human';
+                    }
                 }
+                return 'ai';
+            } else {
+                // In bot_vs_bot mode, all players are AI
+                return 'ai';
             }
-            return 'ai';
         },
         current_player: function() {
             return this.state.players[this.state.current_player_index];
@@ -1008,10 +1193,64 @@ var app = new Vue({
             return players;
         },
         show_card_buttons: function() {
-            return !this.discarding && this.player_type === 'human' && (this.winner_index === null);
+            return this.game_mode === 'human_vs_ai' && this.player_type === 'human';
         },
         has_winner: function() {
             return !(this.winner_index === null);
+        },
+        last_move_description: {
+            get: function() {
+                return this.last_move ? move_to_description(this.last_move) : '';
+            },
+            set: function(newValue) {
+                // This is needed for two-way binding
+                this._last_move_description = newValue;
+            }
+        }
+    },
+    watch: {
+        // Watch for changes in game mode
+        game_mode: function(newMode) {
+            this.reset();
+        },
+        
+        // Watch for changes in bot advance mode
+        bot_advance_mode: function(newMode) {
+            if (this.game_mode === 'bot_vs_bot') {
+                if (newMode === 'auto') {
+                    this.schedule_auto_ai_move();
+                } else {
+                    // Cancel any scheduled auto moves
+                    if (this.scheduled_move_func !== null) {
+                        window.clearTimeout(this.scheduled_move_func);
+                        this.scheduled_move_func = null;
+                    }
+                }
+            }
+        },
+        
+        // Watch for changes in bot types
+        player1_bot_type: function(newType) {
+            if (this.game_mode === 'bot_vs_bot') {
+                // Reset the game when bot type changes
+                this.reset();
+            }
+        },
+        
+        player2_bot_type: function(newType) {
+            if (this.game_mode === 'bot_vs_bot') {
+                // Reset the game when bot type changes
+                this.reset();
+            }
+        }
+    },
+    mounted: function() {
+        // Initialize with the selected game mode
+        this.reset();
+        
+        // If we're in bot vs bot auto mode, start it right away
+        if (this.game_mode === 'bot_vs_bot' && this.bot_advance_mode === 'auto') {
+            this.schedule_auto_ai_move();
         }
     }
 });

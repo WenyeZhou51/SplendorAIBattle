@@ -480,11 +480,16 @@ class GameState {
             player.cards_in_hand.push(card);
 
             var gems = move['gems'];
-            if ('gold' in gems) {  // no other colour can appear
-                player.gems['gold'] += gems['gold'];
-                this.supply_gems['gold'] -= 1;
+            if ('gold' in gems && gems['gold'] > 0) {  // Check gold is requested
+                // Only take gold if it's available in supply
+                if (this.supply_gems['gold'] > 0) {
+                    player.gems['gold'] += gems['gold'];
+                    this.supply_gems['gold'] -= gems['gold'];
+                } else {
+                    // Gold wasn't available - update the move to reflect this
+                    gems['gold'] = 0;
+                }
             }
-
         }
 
         // Assign nobles if necessary
