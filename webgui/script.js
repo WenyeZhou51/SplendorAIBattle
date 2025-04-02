@@ -867,7 +867,7 @@ var app = new Vue({
         debug_checked: false,
         game_mode: 'human_vs_ai',  // New: game mode selector
         bot_advance_mode: 'manual', // New: bot advancement mode
-        auto_advance_delay: 0.2,   // New: delay for auto advancement
+        auto_advance_delay: 0.1,   // New: delay for auto advancement
         last_move: null,           // New: store the last move for display
         player1_bot_type: 'neural', // New: bot type for player 1
         player2_bot_type: 'greedy', // New: bot type for player 2
@@ -1004,6 +1004,12 @@ var app = new Vue({
                         this.scheduled_move_func = null;
                     }
                 }
+                // Auto-schedule next move if we're in bot vs bot auto mode and there's no winner
+                else if (this.game_mode === 'bot_vs_bot' && 
+                        this.bot_advance_mode === 'auto' && 
+                        this.winner_index === null) {
+                    this.schedule_auto_ai_move();
+                }
             }
         },
         do_move_gems: function(info) {
@@ -1101,11 +1107,21 @@ var app = new Vue({
                 return;
             }
             
+            // Clear any existing scheduled move to prevent multiple timers
+            if (this.scheduled_move_func !== null) {
+                window.clearTimeout(this.scheduled_move_func);
+                this.scheduled_move_func = null;
+            }
+            
+            // Get the current number of possible moves for display
             this.num_possible_moves = this.state.get_valid_moves(this.state.current_player_index).length;
+            
+            // Schedule the next move with a timeout
             this.scheduled_move_func = window.setTimeout(() => {
+                // Execute the AI move
                 this.do_ai_move();
                 
-                // Only highlight and schedule next move if there's no winner
+                // Only highlight if there's no winner
                 if (this.winner_index === null) {
                     this.highlight_current_player();
                 }

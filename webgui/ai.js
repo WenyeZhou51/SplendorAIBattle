@@ -1,3 +1,7 @@
+// Define color arrays used by the AI
+var colours = ['white', 'blue', 'green', 'red', 'black'];
+var all_colours = ['white', 'blue', 'green', 'red', 'black', 'gold'];
+
 class RandomAI {
     make_move(state) {
         var choice;
@@ -326,18 +330,10 @@ class GreedyAI {
     }
 }
 
-// Create bot instances
-ai_neural = new NeuralNetAI('', state_vector_v02);
-ai_random = new RandomAI();
-ai_greedy = new GreedyAI();
-
-// Default AI
-ai = ai_neural;
-
 class AggroAI {
     constructor() {
         this.name = "Aggro";
-        this.targetCard = null;
+        this.winConditionCard = null; // Card we're targeting as win condition
     }
     
     make_move(state) {
@@ -355,72 +351,102 @@ class AggroAI {
         }
         
         if (winning_moves.length > 0) {
-            // Reset target card since we're about to win
-            this.targetCard = null;
+            // Reset win condition since we're about to win
+            this.winConditionCard = null;
             return winning_moves[0];
         }
         
-        // Find buyable target-type cards (always reevaluate)
-        const buyableTargetMoves = this._findTargetCardPurchaseMoves(moves);
-        if (buyableTargetMoves.length > 0) {
-            // Reset target card since we're buying one of our targets
-            this.targetCard = null;
-            return buyableTargetMoves[0];
-        }
-        
-        // Find or update our target card if we don't have one or it's no longer available
-        if (!this.targetCard || !this._isCardStillAvailable(this.targetCard, state)) {
-            this.targetCard = this._findBestTargetCard(state);
-        }
-        
-        // If we have a target card and it's affordable, buy it
-        if (this.targetCard) {
-            const buyMove = this._getBuyMoveForCard(this.targetCard, moves);
-            if (buyMove) {
-                // Reset target card since we're buying it
-                this.targetCard = null;
-                return buyMove;
-            }
+        // If we don't have a win condition card yet, or it's no longer valid, find a new one
+        if (!this.winConditionCard || !this._isWinConditionValid(this.winConditionCard, state)) {
+            // Look for a new win condition card
+            const newWinCondition = this._findBestWinCondition(state);
             
-            // If we can't buy it yet, collect gems for it
-            const gemMove = this._findGemMoveForTargetCard(this.targetCard, moves, state);
-            if (gemMove) {
-                return gemMove;
+            if (newWinCondition) {
+                this.winConditionCard = newWinCondition;
+                console.log(`AggroAI set new win condition: ${this._cardDescription(this.winConditionCard)}`);
+                
+                // If we have fewer than 3 reserved cards, reserve this win condition
+                const reserveMove = this._getReserveMoveForCard(this.winConditionCard, moves, state);
+                if (reserveMove && player.cards_in_hand.length < 3) {
+                    return reserveMove;
+                }
             }
         }
         
-        // Fallback: Buy any card with points (prioritize higher tier)
-        const pointCardMoves = this._findAnyPointCardMoves(moves);
-        if (pointCardMoves.length > 0) {
-            return pointCardMoves[0];
+        // If we have a win condition in our reserved cards that we can buy, buy it
+        const reservedWinCondition = this._findReservedWinCondition(player);
+        if (reservedWinCondition) {
+            const buyReservedMove = this._getBuyReservedMove(reservedWinCondition, moves);
+            if (buyReservedMove) {
+                // We've achieved this win condition, reset to find a new one
+                this.winConditionCard = null;
+                return buyReservedMove;
+            }
         }
         
-        // Last resort: Take random gems
-        const gemMoves = moves.filter(move => move.action === 'gems');
-        if (gemMoves.length > 0) {
-            return gemMoves[0];
+        // Try to buy permanent gems that help with our win condition
+        const helpfulCardMove = this._findHelpfulCardPurchase(moves, state);
+        if (helpfulCardMove) {
+            return helpfulCardMove;
+        }
+        
+        // If we have fewer than 3 cards and our win condition is not reserved yet, reserve it
+        if (player.cards_in_hand.length < 3 && !this._isCardReserved(this.winConditionCard, player)) {
+            const reserveMove = this._getReserveMoveForCard(this.winConditionCard, moves, state);
+            if (reserveMove) {
+                return reserveMove;
+            }
+        }
+        
+        // Take gems that help with our win condition
+        const gemMove = this._findHelpfulGemMove(moves, state);
+        if (gemMove) {
+            return gemMove;
+        }
+        
+        // Fallback: Take any gems
+        const anyGemMove = moves.filter(move => move.action === 'gems');
+        if (anyGemMove.length > 0) {
+            return anyGemMove[0];
         }
         
         // Absolute fallback
         return moves[0];
     }
     
-    _isCardStillAvailable(card, state) {
+    _isWinConditionValid(card, state) {
         if (!card) return false;
         
-        // Check if card is in the market
-        for (let tier = 1; tier <= 3; tier++) {
-            for (let marketCard of state.cards_in_market[tier]) {
-                if (this._isSameCard(card, marketCard)) {
-                    return true;
-                }
+        // Check if the card is still in the market (if not already reserved)
+        const player = state.players[state.current_player_index];
+        
+        // If it's in our reserved cards, it's valid
+        if (this._isCardReserved(card, player)) {
+            return true;
+        }
+        
+        // Otherwise check if it's still in the market
+        return this._isCardInMarket(card, state);
+    }
+    
+    _isCardReserved(card, player) {
+        if (!card) return false;
+        
+        for (let reservedCard of player.cards_in_hand) {
+            if (this._isSameCard(card, reservedCard)) {
+                return true;
             }
         }
         
-        // Check if it's reserved by the player
-        const player = state.players[state.current_player_index];
-        for (let reservedCard of player.cards_in_hand) {
-            if (this._isSameCard(card, reservedCard)) {
+        return false;
+    }
+    
+    _isCardInMarket(card, state) {
+        if (!card) return false;
+        
+        const tier = card.tier;
+        for (let marketCard of state.cards_in_market[tier]) {
+            if (this._isSameCard(card, marketCard)) {
                 return true;
             }
         }
@@ -447,161 +473,208 @@ class AggroAI {
         return true;
     }
     
-    _findTargetCardPurchaseMoves(moves) {
-        let targetMoves = [];
+    _cardDescription(card) {
+        if (!card) return "no card";
         
-        for (let move of moves) {
-            if ((move.action === 'buy_available' || move.action === 'buy_reserved') && move.card) {
-                // Check that the card has points
-                if (move.card.points <= 0) continue;
-                
-                if (
-                    // Level 3 with 7 of a single gem
-                    (move.card.tier === 3 && this._hasSingleColor7Gems(move.card)) ||
-                    
-                    // Level 2 with 5 of a single gem
-                    (move.card.tier === 2 && this._hasSingleColor5Gems(move.card)) ||
-                    
-                    // Level 2 with 6 of a single gem
-                    (move.card.tier === 2 && this._hasSingleColor6Gems(move.card)) ||
-                    
-                    // Level 2 with 2,4,1 distribution
-                    (move.card.tier === 2 && this._has241GemDistribution(move.card))
-                ) {
-                    targetMoves.push(move);
-                }
+        let gemDesc = "";
+        for (let color of colours) {
+            if (card.gems[color] > 0) {
+                gemDesc += `${card.gems[color]} ${color}, `;
             }
         }
         
-        // Sort by points (highest first)
-        targetMoves.sort((a, b) => b.card.points - a.card.points);
-        
-        return targetMoves;
+        return `Tier ${card.tier} ${card.colour} card with ${card.points} points (${gemDesc.slice(0, -2)})`;
     }
     
-    _findBestTargetCard(state) {
-        let targetCards = [];
+    _findBestWinCondition(state) {
         const player = state.players[state.current_player_index];
+        let candidates = [];
         
-        // Check market for target cards
-        for (let tier of [3, 2]) { // Check tier 3 first, then tier 2
-            for (let card of state.cards_in_market[tier]) {
-                // Only consider cards with points
-                if (card.points <= 0) continue;
-                
-                if (
-                    // Level 3 with 7 of a single gem
-                    (tier === 3 && this._hasSingleColor7Gems(card)) ||
-                    
-                    // Level 2 with 5 of a single gem
-                    (tier === 2 && this._hasSingleColor5Gems(card)) ||
-                    
-                    // Level 2 with 6 of a single gem
-                    (tier === 2 && this._hasSingleColor6Gems(card)) ||
-                    
-                    // Level 2 with 2,4,1 distribution
-                    (tier === 2 && this._has241GemDistribution(card))
-                ) {
-                    targetCards.push(card);
+        // Check tier 3 cards first
+        for (let card of state.cards_in_market[3]) {
+            // Check for 7 single gem or 6,3,3 composition
+            if (this._hasSingleColor7Gems(card) || this._has633GemDistribution(card)) {
+                candidates.push(card);
+            }
+        }
+        
+        // If no tier 3 candidates, check tier 2 cards
+        if (candidates.length === 0) {
+            for (let card of state.cards_in_market[2]) {
+                // Check for 5 single gem, 6 single gem, or 2,4,1 composition
+                if (this._hasSingleColor5Gems(card) || 
+                    this._hasSingleColor6Gems(card) || 
+                    this._has241GemDistribution(card)) {
+                    candidates.push(card);
                 }
             }
-            
-            // If we found any target cards in this tier, don't check lower tiers
-            if (targetCards.length > 0) break;
         }
         
-        // Also check player's reserved cards
-        for (let card of player.cards_in_hand) {
-            // Only consider cards with points
-            if (card.points <= 0) continue;
-            
-            if (
-                // Level 3 with 7 of a single gem
-                (card.tier === 3 && this._hasSingleColor7Gems(card)) ||
-                
-                // Level 2 with 5 of a single gem
-                (card.tier === 2 && this._hasSingleColor5Gems(card)) ||
-                
-                // Level 2 with 6 of a single gem
-                (card.tier === 2 && this._hasSingleColor6Gems(card)) ||
-                
-                // Level 2 with 2,4,1 distribution
-                (card.tier === 2 && this._has241GemDistribution(card))
-            ) {
-                targetCards.push(card);
-            }
+        // If no candidates found, return null
+        if (candidates.length === 0) {
+            return null;
         }
         
-        // If no target cards found, check for any point cards in tier 2 or 1
-        if (targetCards.length === 0) {
-            for (let tier of [2, 1]) {
-                for (let card of state.cards_in_market[tier]) {
-                    if (card.points > 0) {
-                        targetCards.push(card);
-                    }
-                }
-                
-                // If we found any point cards in this tier, don't check lower tiers
-                if (targetCards.length > 0) break;
-            }
-        }
-        
-        // Sort by tier then by points (prioritize higher tier and higher points)
-        targetCards.sort((a, b) => {
+        // Sort by tier first, then points
+        candidates.sort((a, b) => {
             if (a.tier !== b.tier) {
-                return b.tier - a.tier;
+                return b.tier - a.tier; // Higher tier first
             }
-            return b.points - a.points;
+            return b.points - a.points; // Higher points second
         });
         
-        return targetCards.length > 0 ? targetCards[0] : null;
+        return candidates[0];
     }
     
-    _getBuyMoveForCard(card, moves) {
-        for (let move of moves) {
-            if ((move.action === 'buy_available' || move.action === 'buy_reserved') && 
-                move.card && this._isSameCard(card, move.card)) {
-                return move;
+    _findReservedWinCondition(player) {
+        for (let card of player.cards_in_hand) {
+            // Check if this reserved card matches our win condition criteria
+            if (card.tier === 3 && (this._hasSingleColor7Gems(card) || this._has633GemDistribution(card))) {
+                return card;
+            }
+            
+            if (card.tier === 2 && (this._hasSingleColor5Gems(card) || 
+                                    this._hasSingleColor6Gems(card) || 
+                                    this._has241GemDistribution(card))) {
+                return card;
             }
         }
+        
         return null;
     }
     
-    _findGemMoveForTargetCard(card, moves, state) {
-        const player = state.players[state.current_player_index];
-        const gemMoves = moves.filter(move => move.action === 'gems');
+    _getReserveMoveForCard(card, moves, state) {
+        if (!card) return null;
         
-        if (gemMoves.length === 0 || !card) return null;
-        
-        // Calculate what gems we need for the target card
-        let neededGems = {};
-        for (let color of colours) {
-            const required = card.gems[color] || 0;
-            const discount = player.card_colours[color] || 0;
-            const playerGems = player.gems[color] || 0;
+        // Find the card's position in the market
+        const tier = card.tier;
+        for (let index = 0; index < state.cards_in_market[tier].length; index++) {
+            const marketCard = state.cards_in_market[tier][index];
             
-            const stillNeeded = Math.max(0, required - discount - playerGems);
-            if (stillNeeded > 0) {
-                neededGems[color] = stillNeeded;
+            if (this._isSameCard(card, marketCard)) {
+                // Find a reserve move for this card
+                for (let move of moves) {
+                    if (move.action === 'reserve' && 
+                        move.tier === tier && 
+                        move.index === index) {
+                        return move;
+                    }
+                }
             }
         }
         
-        // Score each gem move based on how much it helps with the target card
+        return null;
+    }
+    
+    _getBuyReservedMove(card, moves) {
+        if (!card) return null;
+        
+        // Find the reserved card index
+        for (let move of moves) {
+            if (move.action === 'buy_reserved' && move.card && this._isSameCard(card, move.card)) {
+                return move;
+            }
+        }
+        
+        return null;
+    }
+    
+    _colorHelpsWithWinCondition(color, winCondition, player) {
+        if (!winCondition) return false;
+        
+        // Check if the win condition requires this color
+        return (winCondition.gems[color] || 0) > (player.card_colours[color] || 0);
+    }
+    
+    _findHelpfulCardPurchase(moves, state) {
+        if (!this.winConditionCard) return null;
+        
+        const player = state.players[state.current_player_index];
+        let helpfulMoves = [];
+        
+        // Look for cards that provide permanent gems that help with our win condition
+        for (let move of moves) {
+            if ((move.action === 'buy_available' || move.action === 'buy_reserved') && move.card) {
+                // Check if this card's color helps with our win condition
+                if (this._colorHelpsWithWinCondition(move.card.colour, this.winConditionCard, player)) {
+                    helpfulMoves.push(move);
+                }
+            }
+        }
+        
+        if (helpfulMoves.length === 0) {
+            return null;
+        }
+        
+        // Sort by cost (cheapest first)
+        helpfulMoves.sort((a, b) => {
+            const aCost = this._calculateGemCost(a.gems);
+            const bCost = this._calculateGemCost(b.gems);
+            
+            if (aCost !== bCost) {
+                return aCost - bCost; // Cheapest first
+            }
+            
+            // If same cost, prefer higher points
+            return (b.card.points || 0) - (a.card.points || 0);
+        });
+        
+        return helpfulMoves[0];
+    }
+    
+    _calculateGemCost(gems) {
+        let total = 0;
+        for (let color of all_colours) {
+            total += gems[color] || 0;
+        }
+        return total;
+    }
+    
+    _findHelpfulGemMove(moves, state) {
+        if (!this.winConditionCard) return null;
+        
+        const player = state.players[state.current_player_index];
+        const gemMoves = moves.filter(move => move.action === 'gems');
+        
+        if (gemMoves.length === 0) {
+            return null;
+        }
+        
+        // Calculate what gems we need for our win condition
+        let neededGems = {};
+        let totalNeeded = 0;
+        
+        for (let color of colours) {
+            // Check how many gems of this color we need
+            const required = this.winConditionCard.gems[color] || 0;
+            const discount = player.card_colours[color] || 0;
+            const playerGems = player.gems[color] || 0;
+            
+            // We need: (requirement - discount - current gems)
+            const stillNeeded = Math.max(0, required - discount - playerGems);
+            
+            if (stillNeeded > 0) {
+                neededGems[color] = stillNeeded;
+                totalNeeded += stillNeeded;
+            }
+        }
+        
+        // Score each gem move by how helpful it is
         let bestMove = null;
         let bestScore = -1;
         
         for (let move of gemMoves) {
             let score = 0;
+            
             for (let color in move.gems) {
                 if (move.gems[color] > 0 && neededGems[color] > 0) {
+                    // Award points based on how much this helps with our needed gems
                     score += Math.min(move.gems[color], neededGems[color]);
-                }
-            }
-            
-            // Bonus for taking 2 of the same color when we need 2+ of that color
-            for (let color in move.gems) {
-                if (move.gems[color] === 2 && neededGems[color] >= 2) {
-                    score += 0.5;
+                    
+                    // Bonus for taking 2 of a color we need a lot of
+                    if (move.gems[color] === 2 && neededGems[color] >= 3) {
+                        score += 1;
+                    }
                 }
             }
             
@@ -611,28 +684,13 @@ class AggroAI {
             }
         }
         
-        return bestMove || gemMoves[0];
-    }
-    
-    _findAnyPointCardMoves(moves) {
-        const pointCardMoves = [];
-        
-        for (let move of moves) {
-            if ((move.action === 'buy_available' || move.action === 'buy_reserved') && 
-                move.card && move.card.points > 0) {
-                pointCardMoves.push(move);
-            }
+        // If we found a helpful move, return it
+        if (bestMove && bestScore > 0) {
+            return bestMove;
         }
         
-        // Sort by tier then points
-        pointCardMoves.sort((a, b) => {
-            if (a.card.tier !== b.card.tier) {
-                return b.card.tier - a.card.tier;
-            }
-            return b.card.points - a.card.points;
-        });
-        
-        return pointCardMoves;
+        // Otherwise, return the first gem move
+        return gemMoves[0];
     }
     
     _hasSingleColor7Gems(card) {
@@ -644,6 +702,25 @@ class AggroAI {
             }
         }
         return false;
+    }
+    
+    _has633GemDistribution(card) {
+        if (!card) return false;
+        
+        // Count gems by color
+        let counts = {};
+        let totalGems = 0;
+        
+        for (let color of colours) {
+            const count = card.gems[color] || 0;
+            if (count > 0) {
+                counts[count] = (counts[count] || 0) + 1;
+                totalGems += count;
+            }
+        }
+        
+        // Check for 6,3,3 pattern (one color with 6, two colors with 3 each)
+        return counts[6] === 1 && counts[3] === 2 && totalGems === 12;
     }
     
     _hasSingleColor6Gems(card) {
