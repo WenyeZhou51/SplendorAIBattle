@@ -56,6 +56,7 @@
                     <option value="greedy">Greedy</option>
                     <option value="random">Random</option>
                     <option value="aggro">Aggro</option>
+                    <option value="ppo">PPO Bot</option>
                   </select>
                 </div>
                 
@@ -66,6 +67,7 @@
                     <option value="greedy">Greedy</option>
                     <option value="random">Random</option>
                     <option value="aggro">Aggro</option>
+                    <option value="ppo">PPO Bot</option>
                   </select>
                 </div>
               </div>
@@ -190,6 +192,7 @@
                                       (game_mode === 'bot_vs_bot' && bot_advance_mode === 'auto' && !has_winner && scheduled_move_func !== null)" 
                               v-bind:player_index="state.current_player_index"
                               v-bind:num_possible_moves="num_possible_moves"
+                              v-bind:ppo_bot_status="ppo_bot_status"
                               v-on:on_player_index="on_player_index">
               </ai-move-status>
               <winner-display v-show="!(winner_index === null)"

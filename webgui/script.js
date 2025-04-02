@@ -476,6 +476,8 @@ Vue.component('player-display', {
                         return 'Random Bot';
                     case 'aggro':
                         return 'Aggro Bot';
+                    case 'ppo':
+                        return 'PPO Bot';
                     default:
                         return 'AI';
                 }
@@ -685,7 +687,7 @@ Vue.component('nobles-display', {
 });
 
 Vue.component('ai-move-status', {
-    props: ['player_index', 'num_possible_moves'],
+    props: ['player_index', 'num_possible_moves', 'ppo_bot_status'],
     mounted: function() {
         this.$emit('on_player_index')
     },
@@ -694,6 +696,7 @@ Vue.component('ai-move-status', {
     <div>
         <h3>AI Player {{ player_index + 1 }} thinking...</h3>
         <p>Evaluating {{ num_possible_moves }} possible moves</p>
+        <p v-if="ppo_bot_status" class="ppo-error">{{ ppo_bot_status }}</p>
     </div>
 </div>
 `
@@ -733,6 +736,9 @@ Vue.component('winner-display', {
                         break;
                     case 'aggro':
                         botName = 'Aggro Bot';
+                        break;
+                    case 'ppo':
+                        botName = 'PPO Bot';
                         break;
                     default:
                         botName = 'AI';
@@ -883,7 +889,8 @@ var app = new Vue({
                          'green': 0,
                          'red': 0,
                          'black': 0,
-                         'gold': 0}
+                         'gold': 0},
+        ppo_bot_status: ''
     },
     methods: {
         testChangeGems: function() {
@@ -972,43 +979,327 @@ var app = new Vue({
             this.num_possible_moves = this.state.get_valid_moves(this.state.current_player_index).length;
             window.setTimeout(this.do_ai_move, 50);
         },
+        validateGameState: function() {
+            console.group("Game State Validation");
+            let isValid = true;
+            let errors = [];
+            
+            try {
+                // Check that the current player index is valid
+                if (this.state.current_player_index < 0 || this.state.current_player_index >= this.state.players.length) {
+                    errors.push(`Invalid current player index: ${this.state.current_player_index}`);
+                    isValid = false;
+                }
+                
+                // Check that players exist
+                if (!this.state.players || this.state.players.length === 0) {
+                    errors.push("No players in game state");
+                    isValid = false;
+                }
+                
+                // Check if market cards are valid
+                if (!this.state.tier_1_visible || !Array.isArray(this.state.tier_1_visible)) {
+                    errors.push("Tier 1 visible cards invalid");
+                    isValid = false;
+                }
+                if (!this.state.tier_2_visible || !Array.isArray(this.state.tier_2_visible)) {
+                    errors.push("Tier 2 visible cards invalid");
+                    isValid = false;
+                }
+                if (!this.state.tier_3_visible || !Array.isArray(this.state.tier_3_visible)) {
+                    errors.push("Tier 3 visible cards invalid");
+                    isValid = false;
+                }
+                
+                // Check if supply gems are valid
+                if (!this.state.supply_gems) {
+                    errors.push("Supply gems are invalid");
+                    isValid = false;
+                } else {
+                    for (let color of all_colours) {
+                        if (this.state.supply_gems[color] === undefined) {
+                            errors.push(`Missing ${color} in supply gems`);
+                            isValid = false;
+                        }
+                    }
+                }
+                
+                // Check each player's state
+                this.state.players.forEach((player, idx) => {
+                    // Check if player has gems
+                    if (!player.gems) {
+                        errors.push(`Player ${idx + 1} has invalid gems`);
+                        isValid = false;
+                    }
+                    
+                    // Check if player has cards played
+                    if (!player.cards_played || !Array.isArray(player.cards_played)) {
+                        errors.push(`Player ${idx + 1} has invalid cards_played`);
+                        isValid = false;
+                    }
+                    
+                    // Check if player has cards in hand
+                    if (!player.cards_in_hand || !Array.isArray(player.cards_in_hand)) {
+                        errors.push(`Player ${idx + 1} has invalid cards_in_hand`);
+                        isValid = false;
+                    }
+                    
+                    // Check if player has valid score
+                    if (typeof player.score !== 'number') {
+                        errors.push(`Player ${idx + 1} has invalid score: ${player.score}`);
+                        isValid = false;
+                    }
+                });
+                
+                // Try to get valid moves as a final sanity check
+                try {
+                    const moves = this.state.get_valid_moves();
+                    console.log(`Valid moves: ${moves.length}`);
+                    if (moves.length === 0) {
+                        errors.push("No valid moves available");
+                        // This may not be an error (could be game over)
+                        console.warn("WARNING: No valid moves, but this could be normal at game end");
+                    }
+                } catch (e) {
+                    errors.push(`Error getting valid moves: ${e.message}`);
+                    isValid = false;
+                }
+                
+                // Log validation results
+                if (isValid) {
+                    console.log("✅ Game state appears valid");
+                } else {
+                    console.error("❌ Game state validation failed:", errors);
+                    console.error("Game state dump:", JSON.parse(JSON.stringify(this.state)));
+                }
+                
+                return isValid;
+            } catch (e) {
+                console.error("Error during game state validation:", e);
+                console.error("Game state dump:", this.state);
+                console.groupEnd();
+                return false;
+            }
+            
+            console.groupEnd();
+        },
         nn_ai_move: function() {
-            console.log('Doing AI move');
+            console.group("AI Move");
+            console.log('Starting AI move');
+            
+            // Validate game state before attempting to make a move
+            if (!this.validateGameState()) {
+                console.error("Invalid game state detected, attempting reset to safe state");
+                // Try to proceed by incrementing player or other recovery
+                try {
+                    this.state.increment_player();
+                    console.log("Incremented player as recovery");
+                } catch (e) {
+                    console.error("Recovery failed:", e);
+                    // If all else fails, reset the game
+                    if (confirm("Game state is corrupted. Reset the game?")) {
+                        this.reset();
+                    }
+                }
+                console.groupEnd();
+                return;
+            }
             
             // Use the appropriate bot for the current player
-            const bot = this.getBotForCurrentPlayer();
             const botType = this.state.current_player_index === 0 ? this.player1_bot_type : this.player2_bot_type;
             console.log(`Using ${botType} bot for player ${this.state.current_player_index + 1}`);
             
-            let move = bot.make_move(this.state);
-            console.log('AI move is', move);
-            this.last_move = move;
-            this.last_move_description = move_to_description(move);
-            this.state.make_move(move);
+            if (botType === 'ppo') {
+                // Use the asynchronous approach for PPO bot
+                this.fetchPPOBotMove();
+            } else {
+                // For other bots, use the existing synchronous approach
+                const bot = this.getBotForCurrentPlayer();
+                let move = bot.make_move(this.state);
+                console.log('AI move is', move);
+                if (!move) {
+                    console.error("Bot returned null/undefined move");
+                    console.groupEnd();
+                    return;
+                }
+                
+                this.last_move = move;
+                this.last_move_description = move_to_description(move);
+                
+                try {
+                    this.state.make_move(move);
+                    console.log("Move applied successfully");
+                } catch (e) {
+                    console.error("Error applying move:", e);
+                    console.groupEnd();
+                    return;
+                }
+            }
+            console.groupEnd();
+        },
+        fetchPPOBotMove: function() {
+            console.group("PPO Bot Move - Start");
+            console.log("Current player:", this.state.current_player_index + 1);
+            
+            const moves = this.state.get_valid_moves();
+            console.log(`Valid moves: ${moves.length}`);
+            
+            // Show a loading indicator or message
+            this.num_possible_moves = moves.length;
+            this.ppo_bot_status = 'Thinking...';
+            
+            // Safety check - if no valid moves, we can't proceed
+            if (moves.length === 0) {
+                console.error("CRITICAL ERROR: No valid moves available for PPO bot!");
+                this.ppo_bot_status = 'Error: No valid moves available!';
+                console.groupEnd();
+                return;
+            }
+            
+            // Create a timeout to prevent getting stuck
+            const timeoutPromise = new Promise((_, reject) => {
+                setTimeout(() => {
+                    console.error("FETCH TIMEOUT: API call took too long (15s)");
+                    reject(new Error('Fetch timeout after 15 seconds'));
+                }, 15000);
+            });
+            
+            // Prepare state data for API
+            try {
+                const state_json = JSON.stringify({
+                    current_player_index: this.state.current_player_index,
+                    players: this.state.players,
+                    supply_gems: this.state.supply_gems,
+                    tier_1_visible: this.state.tier_1_visible,
+                    tier_2_visible: this.state.tier_2_visible,
+                    tier_3_visible: this.state.tier_3_visible,
+                    nobles: this.state.nobles,
+                    moves: moves
+                });
+                
+                // Make the API call with timeout
+                console.log('Fetching PPO bot move from server...');
+                
+                Promise.race([
+                    fetch('http://localhost:5000/api/ppo_move', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: state_json
+                    }),
+                    timeoutPromise
+                ])
+                .then(response => {
+                    console.log(`Server response status: ${response.status}`);
+                    if (!response.ok) {
+                        return response.json().then(errorData => {
+                            throw new Error(errorData.error || `API request failed with status: ${response.status}`);
+                        });
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    console.log('API response:', data);
+                    
+                    // Check if the response contains an error
+                    if (data.error) {
+                        throw new Error(`Server error: ${data.error}`);
+                    }
+                    
+                    const move_index = data.move_index;
+                    console.log('PPO server responded with move index:', move_index);
+                    
+                    // Make sure the move index is valid
+                    if (move_index >= 0 && move_index < moves.length) {
+                        const move = moves[move_index];
+                        console.log('PPO bot move is', move);
+                        this.last_move = move;
+                        this.last_move_description = move_to_description(move);
+                        try {
+                            console.log("Applying move:", JSON.parse(JSON.stringify(move)));
+                            this.state.make_move(move);
+                            console.log("Move applied successfully");
+                            this.ppo_bot_status = '';
+                            
+                            // Check for winner after making the move
+                            this.checkWinnerAfterMove();
+                            
+                            // Schedule next move if appropriate
+                            this.handleNextMoveScheduling();
+                        } catch (moveError) {
+                            console.error("CRITICAL ERROR: Failed to apply move:", moveError);
+                            console.error("Move that failed:", JSON.parse(JSON.stringify(move)));
+                            this.ppo_bot_status = `Error applying move: ${moveError.message}`;
+                        }
+                    } else {
+                        console.error('Invalid move index returned from API:', move_index, 'Max valid index:', moves.length - 1);
+                        this.ppo_bot_status = `Server returned invalid move index: ${move_index}`;
+                    }
+                    console.groupEnd();
+                })
+                .catch(error => {
+                    console.error('Error getting PPO move from server:', error);
+                    console.error('Error type:', error.constructor.name);
+                    console.error('Error stack:', error.stack);
+                    this.ppo_bot_status = `PPO Bot Error: ${error.message}`;
+                    console.groupEnd();
+                });
+            } catch (error) {
+                console.error("CRITICAL ERROR during fetch setup:", error);
+                console.error("Error stack:", error.stack);
+                this.ppo_bot_status = `Setup error: ${error.message}`;
+                console.groupEnd();
+            }
+        },
+        checkWinnerAfterMove: function() {
+            const winner = this.state.has_winner();
+            if (winner !== null) {
+                this.winner_index = winner;
+                console.log(`Player ${winner + 1} has won the game!`);
+                
+                // Cancel any pending auto moves
+                if (this.scheduled_move_func !== null) {
+                    window.clearTimeout(this.scheduled_move_func);
+                    this.scheduled_move_func = null;
+                }
+            }
+        },
+        handleNextMoveScheduling: function() {
+            // Auto-schedule next move if we're in bot vs bot auto mode and there's no winner
+            if (this.game_mode === 'bot_vs_bot' && 
+                this.bot_advance_mode === 'auto' && 
+                this.winner_index === null) {
+                this.schedule_auto_ai_move();
+            }
+            
+            // Update the UI to highlight the current player
+            if (this.winner_index === null) {
+                this.highlight_current_player();
+            }
         },
         do_ai_move: function() {
             this.scheduled_move_func = null;
-            // this.random_move();
             if (this.player_type === 'ai') {
-                this.nn_ai_move();
+                const botType = this.state.current_player_index === 0 ? this.player1_bot_type : this.player2_bot_type;
                 
-                // Check if there's a winner after the AI makes a move
-                const winner = this.state.has_winner();
-                if (winner !== null) {
-                    this.winner_index = winner;
-                    console.log(`Player ${winner + 1} has won the game!`);
+                if (botType === 'ppo') {
+                    // For PPO bot, use the specific fetchPPOBotMove method
+                    this.fetchPPOBotMove();
+                } else {
+                    // For other bots, use the standard approach
+                    this.nn_ai_move();
                     
-                    // Cancel any pending auto moves
-                    if (this.scheduled_move_func !== null) {
-                        window.clearTimeout(this.scheduled_move_func);
-                        this.scheduled_move_func = null;
-                    }
-                }
-                // Auto-schedule next move if we're in bot vs bot auto mode and there's no winner
-                else if (this.game_mode === 'bot_vs_bot' && 
+                    // For non-PPO bots, we need to check for winner here
+                    // (PPO bot handles this in its own callback)
+                    this.checkWinnerAfterMove();
+                    
+                    // Schedule next move if appropriate
+                    if (this.game_mode === 'bot_vs_bot' && 
                         this.bot_advance_mode === 'auto' && 
                         this.winner_index === null) {
-                    this.schedule_auto_ai_move();
+                        this.schedule_auto_ai_move();
+                    }
                 }
             }
         },
@@ -1092,12 +1383,35 @@ var app = new Vue({
         },
         // Manual advancement for bot vs bot mode
         do_manual_ai_move: function() {
-            this.do_ai_move();
+            console.group("Manual AI Move");
+            console.log("Manual next move button clicked");
             
-            // Only highlight if there's no winner yet
-            if (this.winner_index === null) {
-                this.highlight_current_player();
+            // Validate game state first
+            if (!this.validateGameState()) {
+                console.error("Invalid game state detected when clicking Next Move");
+                if (confirm("Game state is corrupted. Reset the game?")) {
+                    this.reset();
+                }
+                console.groupEnd();
+                return;
             }
+            
+            try {
+                this.do_ai_move();
+                
+                // Only highlight if there's no winner yet and it's not a PPO bot
+                // (PPO bot handles highlighting in its own callback)
+                const botType = this.state.current_player_index === 0 ? this.player1_bot_type : this.player2_bot_type;
+                if (this.winner_index === null && botType !== 'ppo') {
+                    this.highlight_current_player();
+                }
+            } catch (e) {
+                console.error("Error during manual AI move:", e);
+                console.error("Error stack:", e.stack);
+                alert("An error occurred during the AI move. Check the console for details.");
+            }
+            
+            console.groupEnd();
         },
         
         // Auto advancement for bot vs bot mode
@@ -1116,10 +1430,17 @@ var app = new Vue({
             // Get the current number of possible moves for display
             this.num_possible_moves = this.state.get_valid_moves(this.state.current_player_index).length;
             
+            // Check if current player is using the PPO bot
+            const botType = this.state.current_player_index === 0 ? this.player1_bot_type : this.player2_bot_type;
+            
             // Schedule the next move with a timeout
             this.scheduled_move_func = window.setTimeout(() => {
-                // Execute the AI move
-                this.do_ai_move();
+                // Execute the AI move - special handling for PPO bot
+                if (botType === 'ppo') {
+                    this.fetchPPOBotMove();
+                } else {
+                    this.do_ai_move();
+                }
                 
                 // Only highlight if there's no winner
                 if (this.winner_index === null) {
@@ -1158,18 +1479,22 @@ var app = new Vue({
             const playerIndex = this.state.current_player_index;
             const botType = playerIndex === 0 ? this.player1_bot_type : this.player2_bot_type;
             
-            switch(botType) {
-                case 'neural':
-                    return ai_neural;
-                case 'greedy':
-                    return ai_greedy;
-                case 'random':
-                    return ai_random;
-                case 'aggro':
-                    return ai_aggro;
-                default:
-                    return ai_neural;  // Default to neural
+            console.log('current player bot type is', botType);
+            switch (botType) {
+            case 'neural':
+                // Make sure we always pass the state_vector_v02 function
+                return ai_neural || new NeuralNetAI('', state_vector_v02);
+            case 'greedy':
+                return new GreedyAI();
+            case 'random':
+                return new RandomAI();
+            case 'aggro':
+                return new AggroAI();
+            case 'ppo':
+                return 'ppo'; // Special case - return string flag instead of bot instance
             }
+            console.log('unrecognised bot type', botType);
+            return 'human';
         }
     },
     computed: {
