@@ -1,11 +1,9 @@
-
-
-from aibase import AI, MoveInfo
+from lapidary.aibase import AI, MoveInfo
 
 import tensorflow as tf
 import numpy as np
 
-from data import colours
+from lapidary.data import colours
 
 from os.path import join, dirname, abspath
 import time

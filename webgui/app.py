@@ -13,21 +13,27 @@ sys.path.append(os.path.join(parent_dir, 'Tims_splendor_agent'))
 
 from lapidary.game import GameState, Card, Noble
 from lapidary.data import colours as colors
-from Tims_splendor_agent.ppo_bot import PPOBotAI
+from Tims_splendor_agent.model_bot import ModelBotAI
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
-# Initialize the PPO bot
-model_path = os.path.join(parent_dir, 'Tims_splendor_agent', 'models', 'ppo_checkpoint_final.pt')
-ppo_bot = None
+# Initialize the model bot - default to the PPO model for backward compatibility
+default_model_path = os.path.join(parent_dir, 'Tims_splendor_agent', 'models', 'ppo_checkpoint_final.pt')
+model_bot = None
+
+# For configuring the model path via environment variable
+MODEL_PATH = os.environ.get('SPLENDOR_MODEL_PATH', default_model_path)
 
 try:
-    ppo_bot = PPOBotAI(model_path=model_path)
-    print(f"Successfully loaded PPO model from {model_path}")
+    model_bot = ModelBotAI(model_path=MODEL_PATH, input_dim=2300, output_dim=100)
+    print(f"Successfully loaded model from {MODEL_PATH}")
 except Exception as e:
-    print(f"Error loading PPO model: {e}")
+    print(f"Error loading model: {e}")
     print("Using untrained model")
-    ppo_bot = PPOBotAI()
+    model_bot = ModelBotAI(input_dim=2300, output_dim=100)
+
+# For backward compatibility
+ppo_bot = model_bot
 
 def card_error_handler(func):
     """Decorator to handle errors in card conversion"""
@@ -118,8 +124,8 @@ def index():
 
 @app.route('/api/ppo_move', methods=['POST'])
 def ppo_move():
-    """API endpoint for getting a move from the PPO agent"""
-    print("\n==== PPO Move Request ====")
+    """API endpoint for getting a move from the model agent (kept as ppo_move for backward compatibility)"""
+    print("\n==== Model Bot Move Request ====")
     start_time = time.time()
     data = request.json
     
@@ -253,20 +259,20 @@ def ppo_move():
         # Enable caching of state copies to speed up move evaluation
         game_state._cached_copies = {}
         
-        # Get moves from the PPO bot
-        print(f"Getting PPO bot move for player {game_state.current_player_index + 1}")
+        # Get moves from the model bot
+        print(f"Getting model bot move for player {game_state.current_player_index + 1}")
         try:
             # First modify the game state to disable verification to avoid ipdb errors
             game_state._verify_state = False  # Add this attribute to skip verification
             
-            # Get the move from the PPO bot
+            # Get the move from the model bot (using ppo_bot for backward compatibility)
             selected_move, _ = ppo_bot.make_move(game_state)
-            print(f"PPO bot selected move: {selected_move}")
+            print(f"Model bot selected move: {selected_move}")
         except Exception as e:
-            print(f"Error getting move from PPO bot: {e}")
+            print(f"Error getting move from model bot: {e}")
             import traceback
             traceback.print_exc()
-            return jsonify({'error': f'PPO bot error: {str(e)}'}), 500
+            return jsonify({'error': f'Model bot error: {str(e)}'}), 500
         
         # Find the index of the selected move in the frontend moves list
         move_index = -1
@@ -292,32 +298,32 @@ def ppo_move():
         
         # If we still couldn't find a match, return an error
         if move_index == -1:
-            return jsonify({'error': 'Failed to match PPO move with frontend moves'}), 400
+            return jsonify({'error': 'Failed to match model move with frontend moves'}), 400
         
         elapsed = time.time() - start_time
-        print(f"PPO move processing took {elapsed:.2f} seconds")
-        print("==== PPO Move Response Complete ====\n")
+        print(f"Model move processing took {elapsed:.2f} seconds")
+        print("==== Model Move Response Complete ====\n")
         return jsonify({'move_index': move_index})
     
     except Exception as e:
         import traceback
         traceback.print_exc()
-        print("ERROR in PPO move handler:", str(e))
+        print("ERROR in model move handler:", str(e))
         return jsonify({'error': str(e)}), 500
 
-def _moves_match(frontend_move, ppo_move):
+def _moves_match(frontend_move, model_move):
     """
-    Check if a frontend move exactly matches a PPO move
+    Check if a frontend move exactly matches a model move
     
     Args:
         frontend_move: Move from the frontend
-        ppo_move: Move from the PPO bot
+        model_move: Move from the model bot
     
     Returns:
         bool: True if the moves match
     """
     # Check if actions match
-    if frontend_move['action'] != ppo_move[0]:
+    if frontend_move['action'] != model_move[0]:
         return False
     
     action = frontend_move['action']
@@ -327,126 +333,163 @@ def _moves_match(frontend_move, ppo_move):
         for color in colors:
             frontend_value = frontend_move['gems'].get(color, 0)
             
-            # Handle both list and dict formats from PPO
-            if isinstance(ppo_move[1], dict):
-                ppo_value = ppo_move[1].get(color, 0)
+            # Handle both list and dict formats from model
+            if isinstance(model_move[1], dict):
+                model_value = model_move[1].get(color, 0)
             else:
                 # Try to find color in list by index
                 try:
                     color_index = colors.index(color)
-                    if color_index < len(ppo_move[1]):
-                        ppo_value = ppo_move[1][color_index]
+                    if color_index < len(model_move[1]):
+                        model_value = model_move[1][color_index]
                     else:
-                        ppo_value = 0
+                        model_value = 0
                 except (ValueError, IndexError):
-                    ppo_value = 0
+                    model_value = 0
             
-            if frontend_value != ppo_value:
+            if frontend_value != model_value:
                 return False
         
         return True
     
     elif action == 'reserve':
         # For reserve moves, check tier and index match
-        if frontend_move.get('tier') != ppo_move[1] or frontend_move.get('index') != ppo_move[2]:
+        if frontend_move.get('tier') != model_move[1] or frontend_move.get('index') != model_move[2]:
             return False
         
         # Check gold gem gain matches
         frontend_gold = frontend_move.get('gems', {}).get('gold', 0)
-        ppo_gold = 0
-        if len(ppo_move) > 3 and isinstance(ppo_move[3], dict):
-            ppo_gold = ppo_move[3].get('gold', 0)
-        elif len(ppo_move) > 3 and isinstance(ppo_move[3], list) and len(ppo_move[3]) > 0:
-            ppo_gold = ppo_move[3][5]  # Assuming gold is at index 5
+        model_gold = 0
+        if len(model_move) > 3 and isinstance(model_move[3], dict):
+            model_gold = model_move[3].get('gold', 0)
+        elif len(model_move) > 3 and isinstance(model_move[3], list) and len(model_move[3]) > 0:
+            model_gold = model_move[3][5]  # Assuming gold is at index 5
         
-        return frontend_gold == ppo_gold
+        return frontend_gold == model_gold
     
     elif action == 'buy_available':
         # For buy moves, check tier and index match
-        if frontend_move.get('tier') != ppo_move[1] or frontend_move.get('index') != ppo_move[2]:
+        if frontend_move.get('tier') != model_move[1] or frontend_move.get('index') != model_move[2]:
             return False
         
         # Check payment matches
         frontend_payment = frontend_move.get('gems', {})
-        ppo_payment = ppo_move[3] if len(ppo_move) > 3 else {}
+        model_payment = model_move[3] if len(model_move) > 3 else {}
         
-        # Convert PPO payment to dict if it's a list
-        if isinstance(ppo_payment, list):
+        # Convert model payment to dict if it's a list
+        if isinstance(model_payment, list):
             dict_payment = {}
             for i, color in enumerate(colors + ['gold']):
-                if i < len(ppo_payment) and ppo_payment[i] > 0:
-                    dict_payment[color] = ppo_payment[i]
-            ppo_payment = dict_payment
+                if i < len(model_payment) and model_payment[i] > 0:
+                    dict_payment[color] = model_payment[i]
+            model_payment = dict_payment
         
         # Compare payments
         for color in colors + ['gold']:
             frontend_value = frontend_payment.get(color, 0)
-            ppo_value = ppo_payment.get(color, 0)
-            if frontend_value != ppo_value:
+            model_value = model_payment.get(color, 0)
+            if frontend_value != model_value:
                 return False
         
         return True
     
     elif action == 'buy_reserved':
         # For buy reserved moves, check index matches
-        if frontend_move.get('index') != ppo_move[1]:
+        if frontend_move.get('index') != model_move[1]:
             return False
         
         # Check payment matches
         frontend_payment = frontend_move.get('gems', {})
-        ppo_payment = ppo_move[2] if len(ppo_move) > 2 else {}
+        model_payment = model_move[2] if len(model_move) > 2 else {}
         
-        # Convert PPO payment to dict if it's a list
-        if isinstance(ppo_payment, list):
+        # Convert model payment to dict if it's a list
+        if isinstance(model_payment, list):
             dict_payment = {}
             for i, color in enumerate(colors + ['gold']):
-                if i < len(ppo_payment) and ppo_payment[i] > 0:
-                    dict_payment[color] = ppo_payment[i]
-            ppo_payment = dict_payment
+                if i < len(model_payment) and model_payment[i] > 0:
+                    dict_payment[color] = model_payment[i]
+            model_payment = dict_payment
         
         # Compare payments
         for color in colors + ['gold']:
             frontend_value = frontend_payment.get(color, 0)
-            ppo_value = ppo_payment.get(color, 0)
-            if frontend_value != ppo_value:
+            model_value = model_payment.get(color, 0)
+            if frontend_value != model_value:
                 return False
         
         return True
     
     return False
 
-def _moves_partially_match(frontend_move, ppo_move):
+def _moves_partially_match(frontend_move, model_move):
     """
-    Check if a frontend move partially matches a PPO move
+    Check if a frontend move partially matches a model move
     Just matches the move type and primary parameters, not the payment
     
     Args:
         frontend_move: Move from the frontend
-        ppo_move: Move from the PPO bot
+        model_move: Move from the model bot
     
     Returns:
         bool: True if the moves partially match
     """
     # Check if actions match
-    if frontend_move['action'] != ppo_move[0]:
+    if frontend_move['action'] != model_move[0]:
         return False
     
     action = frontend_move['action']
     
     if action == 'reserve':
         # For reserve moves, just check tier matches
-        return frontend_move.get('tier') == ppo_move[1]
+        return frontend_move.get('tier') == model_move[1]
     
     elif action == 'buy_available':
         # For buy moves, just check tier and index match
-        return frontend_move.get('tier') == ppo_move[1] and frontend_move.get('index') == ppo_move[2]
+        return frontend_move.get('tier') == model_move[1] and frontend_move.get('index') == model_move[2]
     
     elif action == 'buy_reserved':
         # For buy reserved moves, just check index matches
-        return frontend_move.get('index') == ppo_move[1]
+        return frontend_move.get('index') == model_move[1]
     
     # For other move types (like gems), use the exact match function
-    return _moves_match(frontend_move, ppo_move)
+    return _moves_match(frontend_move, model_move)
+
+# Add a new endpoint to configure model path at runtime
+@app.route('/api/set_model', methods=['POST'])
+def set_model():
+    """API endpoint for changing the model at runtime"""
+    global model_bot, ppo_bot
+    
+    data = request.json
+    
+    if not data or 'model_path' not in data:
+        return jsonify({'error': 'Missing model_path parameter'}), 400
+        
+    model_path = data['model_path']
+    input_dim = data.get('input_dim', 2300)
+    output_dim = data.get('output_dim', 100)
+    
+    try:
+        # Load the new model
+        new_model_bot = ModelBotAI(model_path=model_path, input_dim=input_dim, output_dim=output_dim)
+        
+        # If successful, update the global model bot
+        model_bot = new_model_bot
+        ppo_bot = new_model_bot  # For backward compatibility
+        
+        return jsonify({
+            'success': True, 
+            'message': f'Model successfully loaded from {model_path}',
+            'model_info': {
+                'path': model_path,
+                'input_dim': input_dim,
+                'output_dim': output_dim
+            }
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Failed to load model: {str(e)}'}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0') 

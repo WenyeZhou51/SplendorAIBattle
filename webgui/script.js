@@ -890,7 +890,14 @@ var app = new Vue({
                          'red': 0,
                          'black': 0,
                          'gold': 0},
-        ppo_bot_status: ''
+        ppo_bot_status: '',
+        
+        // Model configuration
+        model_path: '',
+        model_input_dim: 2300,
+        model_output_dim: 100,
+        model_status: '',
+        model_status_class: '',
     },
     methods: {
         testChangeGems: function() {
@@ -1491,11 +1498,46 @@ var app = new Vue({
             case 'aggro':
                 return new AggroAI();
             case 'ppo':
-                return 'ppo'; // Special case - return string flag instead of bot instance
+                return 'ppo'; // Keep 'ppo' for backward compatibility, but this now uses the ModelBotAI
             }
             console.log('unrecognised bot type', botType);
             return 'human';
-        }
+        },
+        
+        // Load a new model from the specified path
+        loadModel: function() {
+            this.model_status = 'Loading...';
+            this.model_status_class = 'loading';
+            
+            const modelConfig = {
+                model_path: this.model_path,
+                input_dim: this.model_input_dim,
+                output_dim: this.model_output_dim
+            };
+            
+            fetch('/api/set_model', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(modelConfig)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    this.model_status = 'Success: ' + data.message;
+                    this.model_status_class = 'success';
+                } else {
+                    this.model_status = 'Error: ' + (data.error || 'Unknown error');
+                    this.model_status_class = 'error';
+                }
+            })
+            .catch(error => {
+                console.error('Error loading model:', error);
+                this.model_status = 'Error: ' + error.message;
+                this.model_status_class = 'error';
+            });
+        },
     },
     computed: {
         player_type: function() {

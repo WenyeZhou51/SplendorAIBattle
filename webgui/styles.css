@@ -1,0 +1,73 @@
+/* Add styles for model configuration section */
+.model-config {
+    margin-top: 1rem;
+    padding: 1rem;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    background-color: #f9f9f9;
+}
+
+.model-config h4 {
+    margin-top: 0;
+    margin-bottom: 0.5rem;
+}
+
+.model-path-input {
+    display: flex;
+    align-items: center;
+    margin-bottom: 0.5rem;
+}
+
+.model-path-input label {
+    margin-right: 0.5rem;
+    min-width: 100px;
+}
+
+.model-path-input input {
+    flex-grow: 1;
+    padding: 0.3rem;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+}
+
+.model-dimensions {
+    display: flex;
+    align-items: center;
+    margin-bottom: 0.5rem;
+}
+
+.model-dimensions label {
+    margin-right: 0.5rem;
+    margin-left: 0.5rem;
+}
+
+.model-dimensions input {
+    width: 80px;
+    padding: 0.3rem;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+}
+
+.model-status {
+    margin-top: 0.5rem;
+    padding: 0.5rem;
+    border-radius: 3px;
+}
+
+.model-status.success {
+    background-color: #dff0d8;
+    border: 1px solid #d6e9c6;
+    color: #3c763d;
+}
+
+.model-status.error {
+    background-color: #f2dede;
+    border: 1px solid #ebccd1;
+    color: #a94442;
+}
+
+.model-status.loading {
+    background-color: #d9edf7;
+    border: 1px solid #bce8f1;
+    color: #31708f;
+} 

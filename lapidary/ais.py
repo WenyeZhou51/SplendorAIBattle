@@ -1,6 +1,6 @@
-from data import colours
-from game import GameState
-from aibase import AI, MoveInfo
+from lapidary.data import colours
+from lapidary.game import GameState
+from lapidary.aibase import AI, MoveInfo
 
 import matplotlib.pyplot as plt
 
@@ -12,10 +12,19 @@ import time
 from glob import glob
 from os.path import join
 
-from nn import H50AI, H50AI_TDlam
+from lapidary.nn import H50AI, H50AI_TDlam
 import random
 
 from collections import namedtuple
+
+# Import PPO Bot
+import os
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.join(os.path.dirname(current_dir), 'Tims_splendor_agent'))
+try:
+    from ppo_bot import PPOBotAI
+except ImportError:
+    pass  # Gracefully handle if PPO bot is not available
 
 ProgressInfo = namedtuple(
     'ProgressInfo',

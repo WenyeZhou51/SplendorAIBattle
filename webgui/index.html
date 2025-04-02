@@ -56,7 +56,7 @@
                     <option value="greedy">Greedy</option>
                     <option value="random">Random</option>
                     <option value="aggro">Aggro</option>
-                    <option value="ppo">PPO Bot</option>
+                    <option value="ppo">Model Bot</option>
                   </select>
                 </div>
                 
@@ -67,9 +67,26 @@
                     <option value="greedy">Greedy</option>
                     <option value="random">Random</option>
                     <option value="aggro">Aggro</option>
-                    <option value="ppo">PPO Bot</option>
+                    <option value="ppo">Model Bot</option>
                   </select>
                 </div>
+              </div>
+              
+              <!-- New Model Configuration UI -->
+              <div class="model-config" v-if="player1_bot_type === 'ppo' || player2_bot_type === 'ppo'">
+                <h4>Model Bot Configuration:</h4>
+                <div class="model-path-input">
+                  <label>Model Path:</label>
+                  <input type="text" v-model="model_path" placeholder="/path/to/your/model.pt">
+                </div>
+                <div class="model-dimensions">
+                  <label>Input Dim:</label>
+                  <input type="number" v-model.number="model_input_dim" min="1">
+                  <label>Output Dim:</label>
+                  <input type="number" v-model.number="model_output_dim" min="1">
+                </div>
+                <button @click="loadModel" class="btn btn-primary">Load Model</button>
+                <div v-if="model_status" class="model-status" :class="model_status_class">{{ model_status }}</div>
               </div>
               
               <button v-if="bot_advance_mode === 'manual' && player_type === 'ai' && winner_index === null" 
