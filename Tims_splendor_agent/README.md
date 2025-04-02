@@ -25,6 +25,68 @@ The agent uses Proximal Policy Optimization (PPO) algorithm to learn the optimal
 - Gymnasium
 - NumPy
 
+## Reinforcement Learning Agent
+
+This project includes an implementation of a reinforcement learning agent using Proximal Policy Optimization (PPO) algorithm with the Gymnasium framework.
+
+### Model Architecture
+
+The RL agent uses an Actor-Critic architecture:
+- Input dimension: 2300 (matches the game state vector size)
+- Output dimension: 100 (matches the maximum number of possible actions)
+- The actor network outputs action probabilities
+- The critic network estimates state values
+
+### Training the Agent
+
+To train the agent, run:
+
+```bash
+python train_rl_agent.py --mode train --episodes 1000 --save_every 100
+```
+
+This will:
+- Train the agent for 1000 episodes
+- Save the model every 100 episodes
+- Save a final model to `models/splendor_agent.pt`
+- Generate learning curve plots in the `models/` directory
+
+You can customize training with the following arguments:
+- `--mode`: Choose 'train', 'evaluate', or 'both'
+- `--episodes`: Number of episodes to train or evaluate
+- `--save_every`: Save frequency during training
+- `--model_path`: Custom path to save/load the model
+
+### Evaluating the Agent
+
+To evaluate a trained agent, run:
+
+```bash
+python train_rl_agent.py --mode evaluate --model_path models/splendor_agent.pt
+```
+
+This will run the model against the environment and report performance metrics.
+
+### Using the Trained Model
+
+The trained model can be loaded and used as follows:
+
+```python
+from rl_agent import PPOAgent
+
+# Load the agent
+agent = PPOAgent()
+agent.load_model('models/splendor_agent.pt')
+
+# Get action from state
+action, _ = agent.get_action(state, valid_moves_mask)
+```
+
+The model is saved as a `.pt` file compatible with PyTorch and meets the webgui model requirements:
+- Input dimensions: 2300
+- Output dimensions: 100
+- File format: .pt (PyTorch save format)
+
 ## Usage
 
 ### Training the Agent

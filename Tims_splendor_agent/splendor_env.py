@@ -7,7 +7,7 @@ from gymnasium import spaces
 
 # Add lapidary to path to import modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from lapidary.game import GameState
+from lapidary.game import GameState, colours
 from lapidary.aibase import MoveInfo
 
 class SplendorEnv(gym.Env):
@@ -57,6 +57,9 @@ class SplendorEnv(gym.Env):
         # Initialize a new game
         self.game_state = GameState(players=self.num_players, init_game=True, validate=True)
         
+        # Add compatibility methods to handle inconsistent naming
+        self._add_compatibility_methods()
+        
         # Get valid moves for the current player
         self.valid_moves = self.game_state.get_valid_moves(self.game_state.current_player_index)
         self._update_valid_moves_mapping()
@@ -69,6 +72,13 @@ class SplendorEnv(gym.Env):
         for i, move in enumerate(self.valid_moves):
             self.valid_moves_mapping[i] = move
     
+    def _add_compatibility_methods(self):
+        """Add compatibility methods to handle inconsistent naming in the codebase."""
+        # Add num_cards_of_color method to Player class that calls num_cards_of_colour
+        for player in self.game_state.players:
+            if not hasattr(player, 'num_cards_of_color'):
+                player.num_cards_of_color = player.num_cards_of_colour
+
     def step(self, action):
         """
         Execute an action in the environment.
@@ -98,6 +108,28 @@ class SplendorEnv(gym.Env):
         # Get the actual move
         move = self.valid_moves_mapping[action]
         
+        # Check if move would cause player to exceed gem limit and fix it if needed
+        # In Splendor, no player can have more than 10 gems total
+        if move[0] == 'gems' or move[0] == 'reserve':
+            current_player = self.game_state.players[self.game_state.current_player_index]
+            
+            # Calculate how many gems the player would have after this move
+            gems_gained = {}
+            if move[0] == 'gems':
+                gems_gained = move[1]
+            elif move[0] == 'reserve' and len(move) > 3:
+                gems_gained = move[3]
+            
+            # Count total gems after move
+            total_gems = current_player.total_num_gems
+            for color, count in gems_gained.items():
+                total_gems += count
+            
+            # If exceeds 10, modify the move to discard gems
+            if total_gems > 10:
+                print(f"Warning: Move would cause player to exceed 10 gems limit. Modifying move.")
+                # This will get handled in the game's move validation
+        
         # Execute the move
         old_scores = [player.score for player in self.game_state.players]
         old_gems = [sum(player.gems.values()) for player in self.game_state.players]
@@ -105,8 +137,57 @@ class SplendorEnv(gym.Env):
         old_reserved = [len(player.cards_in_hand) for player in self.game_state.players]
         current_player = self.game_state.current_player_index
         
-        # Apply move
-        self.game_state.make_move(move)
+        # Apply move and check for state verification errors
+        state_verification_success = True
+        try:
+            # Temporarily store current verify_state setting
+            old_verify = self.game_state._verify_state if hasattr(self.game_state, '_verify_state') else True
+            # Temporarily disable automatic verification
+            self.game_state._verify_state = False
+            # Apply the move without verification
+            self.game_state.make_move(move, refill_market=True, increment_player=True)
+            
+            # Fix player gem counts if they exceed 10
+            for player in self.game_state.players:
+                if player.total_num_gems > 10:
+                    # In a real game, the player would choose which gems to discard
+                    # For simplicity in the environment, we'll discard gems automatically
+                    # starting with the most common ones
+                    gems_to_discard = player.total_num_gems - 10
+                    
+                    # Sort colors by amount (descending)
+                    colors_by_amount = sorted(
+                        [(c, player.num_gems(c)) for c in colours + ['gold'] if player.num_gems(c) > 0],
+                        key=lambda x: x[1],
+                        reverse=True
+                    )
+                    
+                    # Discard gems
+                    for color, amount in colors_by_amount:
+                        # Skip gold if possible (it's more valuable)
+                        if color == 'gold' and gems_to_discard < player.total_num_gems - player.num_gems('gold'):
+                            continue
+                            
+                        discard = min(amount, gems_to_discard)
+                        if discard > 0:
+                            # Return gems to supply
+                            self.game_state.set_gems_available(color, 
+                                self.game_state.num_gems_available(color) + discard)
+                            player.set_gems(color, player.num_gems(color) - discard)
+                            gems_to_discard -= discard
+                            
+                        if gems_to_discard == 0:
+                            break
+            
+            # Explicitly run verification
+            state_verification_success = self.game_state.verify_state()
+            # Restore original verification setting
+            self.game_state._verify_state = old_verify
+        except Exception as e:
+            state_verification_success = False
+        
+        # Ensure compatibility methods are available after state changes
+        self._add_compatibility_methods()
         
         # Get the new valid moves for the current player
         self.valid_moves = self.game_state.get_valid_moves(self.game_state.current_player_index)
@@ -121,30 +202,32 @@ class SplendorEnv(gym.Env):
         new_cards = [len(player.cards_played) for player in self.game_state.players]
         new_reserved = [len(player.cards_in_hand) for player in self.game_state.players]
         
-        # Base reward is score improvement
-        reward = new_scores[current_player] - old_scores[current_player]
+        # Make rewards more zero-sum and reduce impact of small rewards
         
-        # Add smaller rewards for progress toward acquiring cards
+        # Base reward is score improvement (reduced by factor of 10)
+        reward = (new_scores[current_player] - old_scores[current_player]) * 0.1
+        
+        # Add smaller rewards for progress toward acquiring cards (reduced by factor of 10)
         # Reward for collecting gems
         if new_gems[current_player] > old_gems[current_player]:
-            reward += 0.1
+            reward += 0.01  # Was 0.1
         
         # Reward for buying cards
         if new_cards[current_player] > old_cards[current_player]:
-            reward += 0.3
+            reward += 0.03  # Was 0.3
         
         # Reward for reserving cards
         if new_reserved[current_player] > old_reserved[current_player]:
-            reward += 0.1
+            reward += 0.01  # Was 0.1
             
-        # Small penalty for passing (which is often represented as a move that doesn't change state)
+        # Small penalty for passing (reduced by factor of 10)
         if (reward == 0 and 
             new_gems[current_player] == old_gems[current_player] and
             new_cards[current_player] == old_cards[current_player] and
             new_reserved[current_player] == old_reserved[current_player]):
-            reward -= 0.05
+            reward -= 0.005  # Was 0.05
         
-        # If game is over, give a larger reward to the winner
+        # If game is over, give equal reward to winner and penalty to loser (zero-sum)
         if terminated:
             max_score = max(new_scores)
             winners = [i for i, score in enumerate(new_scores) if score == max_score]
@@ -154,15 +237,19 @@ class SplendorEnv(gym.Env):
                 min_cards = min(len(self.game_state.players[i].cards_played) for i in winners)
                 winners = [i for i in winners if len(self.game_state.players[i].cards_played) == min_cards]
             
-            # Give +10 reward to winner(s), -5 to losers
+            # Equal magnitude for win/loss (zero-sum): +10 for winners, -10 for losers
             for i in range(self.num_players):
                 if i == current_player:
                     if i in winners:
-                        reward = 10
+                        reward = 10.0  # Fixed value for winning
                     else:
-                        reward = -5
+                        reward = -10.0  # Equal magnitude penalty for losing
         
-        return self._get_obs(), reward, terminated, False, self._get_info()
+        # Create info dictionary including verification status
+        info = self._get_info()
+        info['state_verification_error'] = not state_verification_success
+        
+        return self._get_obs(), reward, terminated, False, info
     
     def render(self):
         """Render the current state of the environment."""
