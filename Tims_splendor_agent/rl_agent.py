@@ -14,30 +14,110 @@ sys.path.append(parent_dir)
 
 from splendor_env import SplendorEnv
 
-# Define the Actor-Critic network model
+# Define the Actor-Critic network model with card-specific processing
 class ActorCritic(nn.Module):
     def __init__(self, input_dim=2300, output_dim=100):
         super(ActorCritic, self).__init__()
-        # Shared layers
-        self.shared = nn.Sequential(
-            nn.Linear(input_dim, 512),
+        
+        # Define indices for different parts of the state vector
+        # These need to be adjusted based on your actual state representation
+        self.card_feature_start = 50     # Estimated start index for card features
+        self.card_feature_end = 600      # Estimated end index for card features
+        self.card_feature_dim = self.card_feature_end - self.card_feature_start
+        
+        # Card-specific processing pathway
+        self.card_encoder = nn.Sequential(
+            nn.Linear(self.card_feature_dim, 256),
+            nn.BatchNorm1d(256),
             nn.ReLU(),
-            nn.Linear(512, 256),
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU()
+        )
+        
+        # Main feature pathway for non-card features
+        self.main_encoder = nn.Sequential(
+            nn.Linear(input_dim - self.card_feature_dim, 384),
+            nn.BatchNorm1d(384),
+            nn.ReLU(),
+            nn.Linear(384, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU()
+        )
+        
+        # Merge pathways and continue with shared layers
+        self.shared = nn.Sequential(
+            nn.Linear(128 + 256, 384),  # Combined dimensions from both pathways
+            nn.BatchNorm1d(384),
+            nn.ReLU(),
+            nn.Linear(384, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
             nn.ReLU()
         )
         
         # Actor head (policy network)
-        self.actor = nn.Linear(256, output_dim)
+        self.actor = nn.Linear(128, output_dim)
         
         # Critic head (value network)
-        self.critic = nn.Linear(256, 1)
+        self.critic = nn.Linear(128, 1)
     
     def forward(self, x):
         if not isinstance(x, torch.Tensor):
             x = torch.FloatTensor(x)
+        
+        # Handle single state case (during action selection)
+        original_dim = x.dim()
+        if original_dim == 1:
+            x = x.unsqueeze(0)  # Add batch dimension for BatchNorm
+        
+        # Extract card features and other features
+        card_features = x[:, self.card_feature_start:self.card_feature_end]
+        
+        # Create a mask to select non-card features (all indices except card features)
+        feature_indices = list(range(0, self.card_feature_start)) + list(range(self.card_feature_end, x.shape[1]))
+        other_features = x[:, feature_indices]
+        
+        # Handling training vs evaluation mode for BatchNorm
+        if x.size(0) == 1:  # If batch size is 1 (inference/evaluation mode)
+            # Set eval mode for BatchNorm
+            self.card_encoder.eval()
+            self.main_encoder.eval()
+            self.shared.eval()
             
-        # Get features from shared layers
-        features = self.shared(x)
+            with torch.no_grad():
+                # Process card features through card-specific pathway
+                card_encoded = self.card_encoder(card_features)
+                
+                # Process other features through main pathway
+                other_encoded = self.main_encoder(other_features)
+                
+                # Concatenate the outputs from both pathways
+                combined = torch.cat([card_encoded, other_encoded], dim=1)
+                
+                # Continue with shared layers
+                features = self.shared(combined)
+            
+            # Set back to training mode if necessary
+            if self.training:
+                self.card_encoder.train()
+                self.main_encoder.train()
+                self.shared.train()
+        else:
+            # Normal forward pass with batch size > 1 (training mode)
+            # Process card features through card-specific pathway
+            card_encoded = self.card_encoder(card_features)
+            
+            # Process other features through main pathway
+            other_encoded = self.main_encoder(other_features)
+            
+            # Concatenate the outputs from both pathways
+            combined = torch.cat([card_encoded, other_encoded], dim=1)
+            
+            # Continue with shared layers
+            features = self.shared(combined)
         
         # Get action probabilities from actor
         action_logits = self.actor(features)
@@ -45,6 +125,11 @@ class ActorCritic(nn.Module):
         
         # Get state value from critic
         value = self.critic(features)
+        
+        # Remove batch dimension if it was added
+        if original_dim == 1:
+            value = value.squeeze(0)
+            action_probs = action_probs.squeeze(0)
         
         return action_probs, value
 

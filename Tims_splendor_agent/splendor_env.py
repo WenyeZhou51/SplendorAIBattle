@@ -98,7 +98,7 @@ class SplendorEnv(gym.Env):
             # Instead of choosing a random action, use a penalty and return the current state
             # This way the agent learns not to choose invalid actions
             print(f"Warning: Invalid action {action} provided. Valid actions: {list(self.valid_moves_mapping.keys())}")
-            return self._get_obs(), -1.0, False, False, {
+            return self._get_obs(), -3.0, False, False, {
                 'scores': [player.score for player in self.game_state.players],
                 'current_player': self.game_state.current_player_index,
                 'num_moves': len(self.valid_moves),
@@ -210,22 +210,22 @@ class SplendorEnv(gym.Env):
         # Add smaller rewards for progress toward acquiring cards (reduced by factor of 10)
         # Reward for collecting gems
         if new_gems[current_player] > old_gems[current_player]:
-            reward += 0.01  # Was 0.1
+            reward += 0.2  # Was 0.01
         
         # Reward for buying cards
         if new_cards[current_player] > old_cards[current_player]:
-            reward += 0.03  # Was 0.3
+            reward += 0.5  # Was 0.03
         
         # Reward for reserving cards
         if new_reserved[current_player] > old_reserved[current_player]:
-            reward += 0.01  # Was 0.1
+            reward += 0.1  # Was 0.01
             
         # Small penalty for passing (reduced by factor of 10)
         if (reward == 0 and 
             new_gems[current_player] == old_gems[current_player] and
             new_cards[current_player] == old_cards[current_player] and
             new_reserved[current_player] == old_reserved[current_player]):
-            reward -= 0.005  # Was 0.05
+            reward -= 1.0  # Was 0.005
         
         # If game is over, give equal reward to winner and penalty to loser (zero-sum)
         if terminated:

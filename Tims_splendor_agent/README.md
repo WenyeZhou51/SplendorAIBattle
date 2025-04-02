@@ -57,6 +57,31 @@ You can customize training with the following arguments:
 - `--save_every`: Save frequency during training
 - `--model_path`: Custom path to save/load the model
 
+### Parallel Training (Faster)
+
+For much faster training using multiple CPU cores, use the parallel implementation:
+
+```bash
+python train_parallel.py --mode train --episodes 5000 --workers 0 --save_every 500
+```
+
+This will:
+- Train the agent for 5000 episodes
+- Use all available CPU cores (setting `--workers 0`)
+- Save the model every 500 episodes
+- Save the final model to `models/parallel_splendor_agent.pt`
+- Generate learning curves with the parallel training progress
+
+Parallel training provides significant speedup:
+- Training that would take hours with sequential processing can be completed in minutes
+- The implementation uses PyTorch's multiprocessing capabilities
+- Memory is shared between processes for efficient training
+
+You can customize parallel training with these arguments:
+- `--workers`: Number of parallel workers (0 = use all CPU cores)
+- `--update_interval`: Number of episodes per worker before policy update
+- Other options are same as sequential training
+
 ### Evaluating the Agent
 
 To evaluate a trained agent, run:

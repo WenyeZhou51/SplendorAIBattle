@@ -1,0 +1,3 @@
+Your model can be saved as a .pt file
+The model has the right input dimensions (2300)
+The model has the right output dimensions (100)
