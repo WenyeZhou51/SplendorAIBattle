@@ -7,8 +7,14 @@ Offers significant speedup over the sequential version by utilizing multiple CPU
 from parallel_rl_agent import train_parallel, evaluate
 import argparse
 import time
+import os
 
 if __name__ == "__main__":
+    # Default path to Splendor/models directory (one level up from script location)
+    default_model_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
+    os.makedirs(default_model_dir, exist_ok=True)
+    default_model_path = os.path.join(default_model_dir, "parallel_splendor_agent.pt")
+    
     parser = argparse.ArgumentParser(description='Train or evaluate a parallel PPO agent for Splendor')
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'evaluate', 'both'],
                         help='Operation mode: train, evaluate, or both')
@@ -20,15 +26,19 @@ if __name__ == "__main__":
                         help='Update policy every N episodes per worker')
     parser.add_argument('--save_every', type=int, default=500,
                         help='Save frequency during training (total episodes)')
-    parser.add_argument('--model_path', type=str, default='models/parallel_splendor_agent.pt',
+    parser.add_argument('--model_path', type=str, default=default_model_path,
                         help='Path to save/load the model')
     
     args = parser.parse_args()
+    
+    # Ensure model directory exists
+    os.makedirs(os.path.dirname(args.model_path), exist_ok=True)
     
     start_time = time.time()
     
     if args.mode in ['train', 'both']:
         print(f"Starting parallel training for {args.episodes} episodes...")
+        print(f"Model will be saved to: {args.model_path}")
         train_parallel(
             num_episodes=args.episodes,
             num_workers=args.workers,

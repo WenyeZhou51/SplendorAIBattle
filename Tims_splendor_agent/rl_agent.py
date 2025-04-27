@@ -185,28 +185,33 @@ class PPOAgent:
         with torch.no_grad():
             action_probs, _ = self.policy(state)
         
-        # Apply mask for valid moves
+        # Strictly apply the valid moves mask
         if valid_moves_mask is not None:
+            # Create a binary mask tensor
             mask = torch.zeros_like(action_probs)
             for i in range(min(len(valid_moves_mask), len(mask))):
                 if i < len(valid_moves_mask) and valid_moves_mask[i]:
                     mask[i] = 1.0
             
-            # Zero out invalid actions
+            # Strictly zero out invalid actions - no probability mass on invalid actions
             masked_probs = action_probs * mask
             
-            # Renormalize probabilities (if any valid moves have non-zero probability)
-            if masked_probs.sum() > 0:
-                masked_probs = masked_probs / masked_probs.sum()
-            else:
-                # If all valid moves have zero probability, use uniform distribution over valid moves
-                masked_probs = mask / mask.sum() if mask.sum() > 0 else action_probs
+            # Ensure the probabilities sum to 1 - will throw error if all valid moves have zero probability
+            if masked_probs.sum() <= 0:
+                raise ValueError("Network assigned zero probability to all valid moves")
+            
+            # Normalize probabilities
+            masked_probs = masked_probs / masked_probs.sum()
         else:
-            masked_probs = action_probs
+            raise ValueError("No valid moves mask provided - required for action selection")
         
-        # Create a distribution and sample
+        # Create distribution and sample action
         dist = Categorical(masked_probs)
         action = dist.sample()
+        
+        # Verify the selected action is valid - if not, this is a serious error
+        if action.item() >= len(valid_moves_mask) or not valid_moves_mask[action.item()]:
+            raise ValueError(f"Selected invalid action {action.item()} despite masking. This should never happen.")
         
         return action.item(), dist.log_prob(action)
     
@@ -252,7 +257,20 @@ class PPOAgent:
         states = torch.FloatTensor(np.array(self.states)).to(self.device)
         actions = torch.LongTensor(self.actions).to(self.device)
         old_log_probs = torch.FloatTensor(self.log_probs).to(self.device)
-        masks = [torch.FloatTensor(m).to(self.device) if m is not None else None for m in self.masks]
+        
+        # Process masks - convert to tensors or None
+        processed_masks = []
+        for m in self.masks:
+            if m is not None:
+                # Create a properly sized mask tensor
+                mask_tensor = torch.zeros(100, device=self.device)  # Assuming action space size is 100
+                for i, valid in enumerate(m):
+                    if valid:
+                        mask_tensor[i] = 1.0
+                processed_masks.append(mask_tensor)
+            else:
+                # A missing mask is an error condition
+                raise ValueError("Missing mask in update - masks are required for all transitions")
         
         # Calculate returns
         returns = self.calculate_returns()
@@ -263,16 +281,18 @@ class PPOAgent:
                 # Get current action probabilities and state value
                 action_probs, state_value = self.policy(states[i])
                 
-                # Apply mask if available
-                if masks[i] is not None:
-                    mask = masks[i]
-                    masked_probs = action_probs * mask
-                    if masked_probs.sum() > 0:
-                        masked_probs = masked_probs / masked_probs.sum()
-                    else:
-                        masked_probs = mask / mask.sum() if mask.sum() > 0 else action_probs
-                else:
-                    masked_probs = action_probs
+                # Apply mask
+                mask = processed_masks[i]
+                
+                # Strictly zero out invalid actions
+                masked_probs = action_probs * mask
+                
+                # Ensure non-zero sum for valid actions - throw error if all valid moves have zero probability
+                if masked_probs.sum() <= 0:
+                    raise ValueError("Network assigned zero probability to all valid moves during update")
+                
+                # Normalize probabilities
+                masked_probs = masked_probs / masked_probs.sum()
                 
                 # Calculate entropy (for exploration)
                 dist = Categorical(masked_probs)

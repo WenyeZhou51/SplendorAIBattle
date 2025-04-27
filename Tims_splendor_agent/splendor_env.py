@@ -95,18 +95,30 @@ class SplendorEnv(gym.Env):
         """
         # Ensure the action is valid
         if action not in self.valid_moves_mapping:
-            # Instead of choosing a random action, use a penalty and return the current state
-            # This way the agent learns not to choose invalid actions
-            print(f"Warning: Invalid action {action} provided. Valid actions: {list(self.valid_moves_mapping.keys())}")
-            return self._get_obs(), -3.0, False, False, {
-                'scores': [player.score for player in self.game_state.players],
-                'current_player': self.game_state.current_player_index,
-                'num_moves': len(self.valid_moves),
-                'invalid_action': True
-            }
+            raise ValueError(f"Invalid action {action}. Valid actions: {list(self.valid_moves_mapping.keys())}")
         
         # Get the actual move
         move = self.valid_moves_mapping[action]
+        
+        # Extra validation - double check this is a valid move
+        actual_valid_moves = self.game_state.get_valid_moves(self.game_state.current_player_index)
+        
+        # Check if the move is actually in the list of valid moves
+        move_is_valid = False
+        for valid_move in actual_valid_moves:
+            # Compare move tuples (they should match exactly)
+            if len(valid_move) == len(move):
+                match = True
+                for i in range(len(move)):
+                    if valid_move[i] != move[i]:
+                        match = False
+                        break
+                if match:
+                    move_is_valid = True
+                    break
+        
+        if not move_is_valid:
+            raise ValueError(f"Move {move} not in list of valid moves from game state.")
         
         # Check if move would cause player to exceed gem limit and fix it if needed
         # In Splendor, no player can have more than 10 gems total
