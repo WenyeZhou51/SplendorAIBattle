@@ -100,8 +100,9 @@ class SplendorLeague:
         
         # Add fixed opponents (rule-based)
         fixed_opponents = {
-            "random_agent": "fixed:random",
-            "heuristic_agent": "fixed:heuristic",
+            "point_rush_agent": "fixed:point_rush",
+            "greedy_agent": "fixed:greedy",
+            "color_agent": "fixed:color",
         }
         
         for agent_id, model_path in fixed_opponents.items():
@@ -229,7 +230,25 @@ class LeagueTrainer:
         # Fixed opponents handlers
         self.fixed_opponents = {
             "random": self._random_policy,
-            "heuristic": self._heuristic_policy
+            "heuristic": self._heuristic_policy,
+            "point_rush": self._point_rush_policy,
+            "greedy": self._greedy_policy,
+            "color": self._color_policy
+        }
+        
+        # Track state for stateful policies
+        self.point_rush_state = {
+            "targetCard": None,
+            "gamePhase": "early",
+            "turnCount": 0,
+            "lastGemColors": []
+        }
+        
+        self.color_bot_state = {
+            "lockedColors": None,
+            "targetCards": None,
+            "gamePhase": "early",
+            "turnCount": 0
         }
     
     def _random_policy(self, state, valid_moves_mask):
@@ -263,6 +282,268 @@ class LeagueTrainer:
         else:
             action = 0  # Fallback
         
+        return action, 0.0
+    
+    def _point_rush_policy(self, state, valid_moves_mask):
+        """
+        PointRushAI strategy implementation:
+        - Focuses on acquiring high-point cards efficiently
+        - Adjusts strategy based on game phase (early/mid/late)
+        - Prioritizes buying cards with points
+        - Will collect gems targeted toward specific high-value cards
+        """
+        # Get game state from the environment
+        game_state = state["game_state"]
+        player_idx = game_state.current_player_index
+        player = game_state.players[player_idx]
+        
+        # Increment turn count
+        self.point_rush_state["turnCount"] += 1
+        
+        # Update game phase
+        total_score = player.score
+        opponent_score = max([p.score for i, p in enumerate(game_state.players) if i != player_idx])
+        score_difference = opponent_score - total_score
+        
+        if total_score >= 10 or opponent_score >= 10 or self.point_rush_state["turnCount"] > 15:
+            self.point_rush_state["gamePhase"] = "late"
+        elif total_score >= 5 or opponent_score >= 6 or score_difference >= 3 or self.point_rush_state["turnCount"] > 8:
+            self.point_rush_state["gamePhase"] = "mid"
+        else:
+            self.point_rush_state["gamePhase"] = "early"
+        
+        # Get valid moves
+        valid_indices = [i for i, v in enumerate(valid_moves_mask) if v]
+        valid_moves = [game_state.valid_moves_mapping.get(i) for i in valid_indices]
+        
+        # Priority 1: Look for winning moves
+        winning_moves_indices = []
+        for i, move_idx in enumerate(valid_indices):
+            # Check if this move would win the game
+            if player.score + (valid_moves[i].get("points", 0) or 0) >= 15:
+                winning_moves_indices.append(i)
+        
+        if winning_moves_indices:
+            action = valid_indices[winning_moves_indices[0]]
+            return action, 0.0
+            
+        # Priority 2: Buy high-value point cards
+        high_value_moves_indices = []
+        for i, move_idx in enumerate(valid_indices):
+            move = valid_moves[i]
+            # Check if it's a buy move with points
+            if (move.get("action") == "buy_available" or move.get("action") == "buy_reserved"):
+                card = move.get("card")
+                if card and card.get("points", 0) >= 2:
+                    high_value_moves_indices.append((i, card.get("points", 0)))
+        
+        if high_value_moves_indices:
+            # Sort by points (highest first)
+            high_value_moves_indices.sort(key=lambda x: x[1], reverse=True)
+            action = valid_indices[high_value_moves_indices[0][0]]
+            return action, 0.0
+        
+        # Priority 3: In late game, reserve high-point cards
+        if self.point_rush_state["gamePhase"] == "late" and len(player.cards_in_hand) < 3:
+            reserve_moves_indices = []
+            for i, move_idx in enumerate(valid_indices):
+                move = valid_moves[i]
+                if move.get("action") == "reserve" and move.get("index") != -1:
+                    tier = move.get("tier", 1)
+                    index = move.get("index", 0)
+                    if tier and index >= 0:
+                        card = game_state.cards_in_market[tier][index]
+                        if card and card.get("points", 0) > 0:
+                            reserve_moves_indices.append((i, card.get("points", 0)))
+            
+            if reserve_moves_indices:
+                # Sort by points (highest first)
+                reserve_moves_indices.sort(key=lambda x: x[1], reverse=True)
+                action = valid_indices[reserve_moves_indices[0][0]]
+                return action, 0.0
+                
+        # Priority 4: Take gems strategically
+        gem_moves_indices = []
+        for i, move_idx in enumerate(valid_indices):
+            move = valid_moves[i]
+            if move.get("action") == "gems":
+                gem_moves_indices.append(i)
+        
+        if gem_moves_indices:
+            # Take first available gem move (simplified)
+            action = valid_indices[gem_moves_indices[0]]
+            return action, 0.0
+            
+        # Fallback to first valid move
+        action = valid_indices[0]
+        return action, 0.0
+    
+    def _greedy_policy(self, state, valid_moves_mask):
+        """
+        GreedyAI strategy implementation:
+        - Prioritizes buying cards with lowest cost
+        - Prefers cards with points as tiebreaker
+        - Takes gems strategically to work toward affordable cards
+        """
+        # Get game state from the environment
+        game_state = state["game_state"]
+        player_idx = game_state.current_player_index
+        player = game_state.players[player_idx]
+        
+        # Get valid moves
+        valid_indices = [i for i, v in enumerate(valid_moves_mask) if v]
+        valid_moves = [game_state.valid_moves_mapping.get(i) for i in valid_indices]
+        
+        # Priority 1: Look for winning moves
+        winning_moves_indices = []
+        for i, move_idx in enumerate(valid_indices):
+            # Check if this move would win the game
+            if player.score + (valid_moves[i].get("points", 0) or 0) >= 15:
+                winning_moves_indices.append(i)
+        
+        if winning_moves_indices:
+            action = valid_indices[winning_moves_indices[0]]
+            return action, 0.0
+        
+        # Priority 2: Buy cards (lowest cost first, then highest points)
+        buy_moves_indices = []
+        for i, move_idx in enumerate(valid_indices):
+            move = valid_moves[i]
+            if (move.get("action") == "buy_available" or move.get("action") == "buy_reserved"):
+                card = move.get("card")
+                if card:
+                    # Calculate total gem cost
+                    total_cost = 0
+                    for color in ["white", "blue", "green", "red", "black"]:
+                        total_cost += move.get("gems", {}).get(color, 0)
+                    
+                    points = card.get("points", 0)
+                    buy_moves_indices.append((i, total_cost, points))
+        
+        if buy_moves_indices:
+            # Sort by cost (lowest first), then by points (highest first)
+            buy_moves_indices.sort(key=lambda x: (x[1], -x[2]))
+            action = valid_indices[buy_moves_indices[0][0]]
+            return action, 0.0
+        
+        # Priority 3: Take gems
+        gem_moves_indices = []
+        for i, move_idx in enumerate(valid_indices):
+            move = valid_moves[i]
+            if move.get("action") == "gems":
+                gem_moves_indices.append(i)
+        
+        if gem_moves_indices:
+            # Take first available gem move (simplified)
+            action = valid_indices[gem_moves_indices[0]]
+            return action, 0.0
+        
+        # Fallback to first valid move
+        action = valid_indices[0]
+        return action, 0.0
+    
+    def _color_policy(self, state, valid_moves_mask):
+        """
+        ColorBot strategy implementation:
+        - Focuses on two specific colors throughout the game
+        - Builds a strong gem engine in those colors
+        - Prioritizes cards that provide permanent gems in target colors
+        - Opportunistically takes high-point cards
+        """
+        # Get game state from the environment
+        game_state = state["game_state"]
+        player_idx = game_state.current_player_index
+        player = game_state.players[player_idx]
+        
+        # Increment turn count
+        self.color_bot_state["turnCount"] += 1
+        
+        # Update game phase
+        total_score = player.score
+        total_cards = len(player.cards_played)
+        
+        if total_score >= 9 or self.color_bot_state["turnCount"] > 15:
+            self.color_bot_state["gamePhase"] = "late"
+        elif total_score >= 4 or total_cards >= 4 or self.color_bot_state["turnCount"] > 8:
+            self.color_bot_state["gamePhase"] = "mid"
+        else:
+            self.color_bot_state["gamePhase"] = "early"
+        
+        # Get valid moves
+        valid_indices = [i for i, v in enumerate(valid_moves_mask) if v]
+        valid_moves = [game_state.valid_moves_mapping.get(i) for i in valid_indices]
+        
+        # Lock colors if not already locked (select two colors to focus on)
+        if not self.color_bot_state["lockedColors"]:
+            # Simple version: lock onto red and blue as default
+            self.color_bot_state["lockedColors"] = ["red", "blue"]
+        
+        # Priority 1: Look for winning moves
+        winning_moves_indices = []
+        for i, move_idx in enumerate(valid_indices):
+            # Check if this move would win the game
+            if player.score + (valid_moves[i].get("points", 0) or 0) >= 15:
+                winning_moves_indices.append(i)
+        
+        if winning_moves_indices:
+            action = valid_indices[winning_moves_indices[0]]
+            return action, 0.0
+        
+        # Priority 2: Buy high-value cards
+        high_value_indices = []
+        for i, move_idx in enumerate(valid_indices):
+            move = valid_moves[i]
+            if (move.get("action") == "buy_available" or move.get("action") == "buy_reserved"):
+                card = move.get("card")
+                if card and (card.get("points", 0) >= 3 or card.get("tier", 1) == 3):
+                    high_value_indices.append((i, card.get("points", 0)))
+        
+        if high_value_indices:
+            # Sort by points (highest first)
+            high_value_indices.sort(key=lambda x: x[1], reverse=True)
+            action = valid_indices[high_value_indices[0][0]]
+            return action, 0.0
+        
+        # Priority 3: Buy cards in our locked colors
+        strategic_indices = []
+        target_colors = self.color_bot_state["lockedColors"]
+        for i, move_idx in enumerate(valid_indices):
+            move = valid_moves[i]
+            if (move.get("action") == "buy_available" or move.get("action") == "buy_reserved"):
+                card = move.get("card")
+                if card:
+                    # Check if color matches one of our target colors
+                    if card.get("gem_color") in target_colors:
+                        strategic_indices.append((i, card.get("points", 0)))
+        
+        if strategic_indices:
+            # Sort by points (highest first)
+            strategic_indices.sort(key=lambda x: x[1], reverse=True)
+            action = valid_indices[strategic_indices[0][0]]
+            return action, 0.0
+        
+        # Priority 4: Take gems in our locked colors
+        gem_indices = []
+        for i, move_idx in enumerate(valid_indices):
+            move = valid_moves[i]
+            if move.get("action") == "gems":
+                gem_colors = []
+                for color, count in move.get("gems", {}).items():
+                    if count > 0:
+                        gem_colors.append(color)
+                
+                # Count how many of our target colors are in this move
+                target_color_count = sum(1 for color in gem_colors if color in target_colors)
+                gem_indices.append((i, target_color_count))
+        
+        if gem_indices:
+            # Sort by target color count (highest first)
+            gem_indices.sort(key=lambda x: x[1], reverse=True)
+            action = valid_indices[gem_indices[0][0]]
+            return action, 0.0
+        
+        # Fallback to first valid move
+        action = valid_indices[0]
         return action, 0.0
     
     def _load_opponent_policy(self, opponent_id):

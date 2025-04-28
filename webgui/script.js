@@ -476,6 +476,10 @@ Vue.component('player-display', {
                         return 'Random Bot';
                     case 'aggro':
                         return 'Aggro Bot';
+                    case 'point_rush':
+                        return 'Point Rush Bot';
+                    case 'color':
+                        return 'Color Bot';
                     case 'ppo':
                         return 'PPO Bot';
                     default:
@@ -736,6 +740,12 @@ Vue.component('winner-display', {
                         break;
                     case 'aggro':
                         botName = 'Aggro Bot';
+                        break;
+                    case 'point_rush':
+                        botName = 'Point Rush Bot';
+                        break;
+                    case 'color':
+                        botName = 'Color Bot';
                         break;
                     case 'ppo':
                         botName = 'PPO Bot';
@@ -1498,6 +1508,10 @@ var app = new Vue({
                 return new RandomAI();
             case 'aggro':
                 return new AggroAI();
+            case 'point_rush':
+                return new PointRushAI();
+            case 'color':
+                return new ColorBot();
             case 'ppo':
                 // If the ppo bot is null, set an error message
                 if (!ppo_bot) {

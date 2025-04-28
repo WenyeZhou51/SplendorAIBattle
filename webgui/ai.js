@@ -2,51 +2,6 @@
 var colours = ['white', 'blue', 'green', 'red', 'black'];
 var all_colours = ['white', 'blue', 'green', 'red', 'black', 'gold'];
 
-class RandomAI {
-    make_move(state) {
-        var choice;
-        let moves = state.get_valid_moves();
-        let player = state.players[state.current_player_index];
-
-        if (player.total_num_gems() <= 8) {
-            let gems_moves = [];
-            for (let move of moves) {
-                if (move['action'] === 'gems') {
-                    gems_moves.push(move);
-                }
-            }
-            if (gems_moves.length > 0 && state.total_num_gems_available() >= 3) {
-                choice = math.pickRandom(gems_moves);
-                return choice;
-            }
-        }
-
-        let buying_moves = [];
-        for (let move of moves) {
-            if (move['action'] === 'buy_available' || move['action'] === 'buy_reserved') {
-                buying_moves.push(move);
-            }
-        }
-        if (buying_moves.length > 0) {
-            choice = math.pickRandom(buying_moves);
-            return choice
-        }
-
-        let reserving_moves = [];
-        for (let move of moves) {
-            if (move['action'] === 'reserve') {
-                reserving_moves.push(move);
-            }
-        }
-        if (reserving_moves.length > 0) {
-            choice = math.pickRandom(reserving_moves);
-            return choice;
-        }
-
-        return math.pickRandom(moves);
-    }
-}
-
 function relu(arr) {
     for (let row_index = 0; row_index < arr.size()[0]; row_index++) {
         let row = arr._data[row_index];
@@ -251,35 +206,44 @@ class GreedyAI {
             return moves[0]; // Fallback to any move
         }
         
-        // Find the cheapest cards in the market
-        let available_cards = [];
-        for (let tier = 1; tier <= 3; tier++) { // Start with tier 1 (cheapest)
+        // Find attainable cards in the market
+        let attainable_cards = [];
+        for (let tier = 1; tier <= 3; tier++) {
             for (let card of state.cards_in_market[tier]) {
-                // Calculate effective cost after applying discounts
-                let effective_cost = 0;
-                for (let color of colours) {
-                    const required = card.gems[color] || 0;
-                    const discount = player.card_colours[color] || 0;
-                    effective_cost += Math.max(0, required - discount);
+                if (this._isCardAttainable(card, state, player)) {
+                    // Calculate efficiency (points per gem)
+                    let total_cost = 0;
+                    for (let color of colours) {
+                        total_cost += card.gems[color] || 0;
+                    }
+                    
+                    // Avoid division by zero
+                    if (total_cost === 0) total_cost = 1;
+                    
+                    attainable_cards.push({
+                        card: card,
+                        cost: total_cost,
+                        efficiency: card.points / total_cost
+                    });
                 }
-                
-                available_cards.push({
-                    card: card,
-                    cost: effective_cost
-                });
             }
         }
         
-        // Sort cards by cost (lowest first)
-        available_cards.sort((a, b) => a.cost - b.cost);
+        // Sort attainable cards by efficiency (highest first)
+        attainable_cards.sort((a, b) => {
+            if (a.efficiency !== b.efficiency) {
+                return b.efficiency - a.efficiency; // Higher efficiency first
+            }
+            return b.card.points - a.card.points; // Higher points as tiebreaker
+        });
         
-        // No cards to aim for, get any gem move
-        if (available_cards.length === 0) {
+        // No attainable cards to aim for, get any gem move
+        if (attainable_cards.length === 0) {
             return gem_moves[0];
         }
         
-        // Target the cheapest card
-        let target_card = available_cards[0].card;
+        // Target the most efficient card
+        let target_card = attainable_cards[0].card;
         
         // Find which gems we need to get the target card
         let needed_gems = {};
@@ -328,19 +292,75 @@ class GreedyAI {
         // Otherwise, get any gem move
         return gem_moves[0];
     }
+    
+    _isCardAttainable(card, state, player) {
+        // Calculate total gems needed for each color
+        let gemsNeeded = {};
+        let totalGemsNeeded = 0;
+        
+        for (let color of colours) {
+            // Calculate how many gems we need after discounts
+            const required = card.gems[color] || 0;
+            const discount = player.card_colours[color] || 0;
+            const playerGems = player.gems[color] || 0;
+            
+            // Net needed = required - discount - player's current gems
+            let netNeeded = Math.max(0, required - discount - playerGems);
+            
+            if (netNeeded > 0) {
+                gemsNeeded[color] = netNeeded;
+                totalGemsNeeded += netNeeded;
+            }
+        }
+        
+        // Check available gems in bank
+        let gemsPossibleToGet = 0;
+        let goldNeeded = 0;
+        
+        for (let color of colours) {
+            if (gemsNeeded[color] > 0) {
+                // How many gems of this color are in the bank
+                const bankGems = state.supply_gems[color] || 0;
+                
+                if (bankGems >= gemsNeeded[color]) {
+                    // Bank has enough of this color
+                    gemsPossibleToGet += gemsNeeded[color];
+                } else {
+                    // Bank doesn't have enough, need to use gold
+                    gemsPossibleToGet += bankGems;
+                    goldNeeded += (gemsNeeded[color] - bankGems);
+                }
+            }
+        }
+        
+        // Check if player has enough gold to cover the deficit
+        const playerGold = player.gems.gold || 0;
+        
+        // Card is attainable if:
+        // 1. We can get enough gems from the bank
+        // 2. Player has enough gold to cover any deficit
+        return (gemsPossibleToGet + Math.min(goldNeeded, playerGold) >= totalGemsNeeded);
+    }
 }
 
-class AggroAI {
+class PointRushAI {
     constructor() {
-        this.name = "Aggro";
-        this.winConditionCard = null; // Card we're targeting as win condition
+        this.name = "Point Rush";
+        this.targetCard = null; // Current card we're targeting
+        this.gamePhase = 'early'; // Track game phase: 'early', 'mid', 'late'
+        this.turnCount = 0;      // Track number of turns
+        this.lastGemColors = []; // Track last collected gem colors to avoid repetition
     }
     
     make_move(state) {
         let moves = state.get_valid_moves();
         let player = state.players[state.current_player_index];
         
-        // First check for winning moves
+        // Update turn count and game phase
+        this.turnCount++;
+        this._updateGamePhase(player, state);
+        
+        // If we can win, always choose that move
         let winning_moves = [];
         for (let move of moves) {
             let new_state = state.copy();
@@ -351,99 +371,226 @@ class AggroAI {
         }
         
         if (winning_moves.length > 0) {
-            // Reset win condition since we're about to win
-            this.winConditionCard = null;
+            console.log("PointRushAI: Taking winning move!");
             return winning_moves[0];
         }
         
-        // If we don't have a win condition card yet, or it's no longer valid, find a new one
-        if (!this.winConditionCard || !this._isWinConditionValid(this.winConditionCard, state)) {
-            // Look for a new win condition card
-            const newWinCondition = this._findBestWinCondition(state);
-            
-            if (newWinCondition) {
-                this.winConditionCard = newWinCondition;
-                console.log(`AggroAI set new win condition: ${this._cardDescription(this.winConditionCard)}`);
-                
-                // If we have fewer than 3 reserved cards, reserve this win condition
-                const reserveMove = this._getReserveMoveForCard(this.winConditionCard, moves, state);
-                if (reserveMove && player.cards_in_hand.length < 3) {
-                    return reserveMove;
-                }
-            }
+        // Try to buy high-point or highly efficient cards immediately
+        const highValueBuyMove = this._findHighValueBuyMove(moves, state, player);
+        if (highValueBuyMove) {
+            console.log("PointRushAI: Buying high-value card!");
+            return highValueBuyMove;
         }
         
-        // If we have a win condition in our reserved cards that we can buy, buy it
-        const reservedWinCondition = this._findReservedWinCondition(player);
-        if (reservedWinCondition) {
-            const buyReservedMove = this._getBuyReservedMove(reservedWinCondition, moves);
-            if (buyReservedMove) {
-                // We've achieved this win condition, reset to find a new one
-                this.winConditionCard = null;
-                return buyReservedMove;
-            }
+        // Look for any decent point card purchase
+        const pointBuyMove = this._findPointBuyMove(moves, state);
+        if (pointBuyMove) {
+            console.log("PointRushAI: Buying point card!");
+            return pointBuyMove;
         }
         
-        // Try to buy permanent gems that help with our win condition
-        const helpfulCardMove = this._findHelpfulCardPurchase(moves, state);
-        if (helpfulCardMove) {
-            return helpfulCardMove;
-        }
-        
-        // If we have fewer than 3 cards and our win condition is not reserved yet, reserve it
-        if (player.cards_in_hand.length < 3 && !this._isCardReserved(this.winConditionCard, player)) {
-            const reserveMove = this._getReserveMoveForCard(this.winConditionCard, moves, state);
+        // In late game, try to reserve high-point cards if we can't buy anything good
+        if (this.gamePhase === 'late' && player.cards_in_hand.length < 3) {
+            const reserveMove = this._findHighPointReserveMove(moves, state);
             if (reserveMove) {
+                console.log("PointRushAI: Reserving high-point card!");
                 return reserveMove;
             }
         }
         
-        // Take gems that help with our win condition
-        const gemMove = this._findHelpfulGemMove(moves, state);
-        if (gemMove) {
-            return gemMove;
-        }
-        
-        // Fallback: Take any gems
-        const anyGemMove = moves.filter(move => move.action === 'gems');
-        if (anyGemMove.length > 0) {
-            return anyGemMove[0];
-        }
-        
-        // Absolute fallback
-        return moves[0];
-    }
-    
-    _isWinConditionValid(card, state) {
-        if (!card) return false;
-        
-        // Check if the card is still in the market (if not already reserved)
-        const player = state.players[state.current_player_index];
-        
-        // If it's in our reserved cards, it's valid
-        if (this._isCardReserved(card, player)) {
-            return true;
-        }
-        
-        // Otherwise check if it's still in the market
-        return this._isCardInMarket(card, state);
-    }
-    
-    _isCardReserved(card, player) {
-        if (!card) return false;
-        
-        for (let reservedCard of player.cards_in_hand) {
-            if (this._isSameCard(card, reservedCard)) {
-                return true;
+        // If we can't buy anything, set target card if needed
+        if (!this.targetCard || !this._isCardValid(this.targetCard, state)) {
+            this.targetCard = this._findBestTargetCard(state, player);
+            if (this.targetCard) {
+                console.log(`PointRushAI: New target card - ${this._cardDescription(this.targetCard)}`);
             }
         }
         
-        return false;
+        // Try to buy any supporting card
+        const supportBuyMove = this._findSupportBuyMove(moves, state, player);
+        if (supportBuyMove) {
+            console.log("PointRushAI: Buying support card!");
+            return supportBuyMove;
+        }
+        
+        // Take gems focused on our target card if we have one
+        const gemMove = this._findBestGemMove(moves, state, player);
+        if (gemMove) {
+            // Track the gems we're taking to avoid repetition
+            this.lastGemColors = [];
+            for (let color in gemMove.gems) {
+                if (gemMove.gems[color] > 0) {
+                    this.lastGemColors.push(color);
+                }
+            }
+            
+            console.log("PointRushAI: Taking gems!");
+            return gemMove;
+        }
+        
+        // Reserve tier 3 blind in early-mid game if we have space
+        if (this.gamePhase !== 'late' && player.cards_in_hand.length < 3) {
+            for (let move of moves) {
+                if (move.action === 'reserve' && move.tier === 3 && move.index === -1) {
+                    console.log("PointRushAI: Blind reserving tier 3 card!");
+                    return move;
+                }
+            }
+        }
+        
+        // Fallback to any move
+        return moves[0];
     }
     
-    _isCardInMarket(card, state) {
+    _updateGamePhase(player, state) {
+        const totalScore = player.score;
+        const opponentScore = this._getOpponentScore(state, player);
+        const scoreDifference = opponentScore - totalScore;
+        
+        // Transition to late game if anyone is close to winning
+        if (totalScore >= 10 || opponentScore >= 10 || this.turnCount > 15) {
+            this.gamePhase = 'late';
+        } 
+        // Transition to mid game earlier if opponent is ahead
+        else if (totalScore >= 5 || opponentScore >= 6 || scoreDifference >= 3 || this.turnCount > 8) {
+            this.gamePhase = 'mid';
+        }
+        else {
+            this.gamePhase = 'early';
+        }
+    }
+    
+    _getOpponentScore(state, player) {
+        let maxOpponentScore = 0;
+        for (let i = 0; i < state.players.length; i++) {
+            if (state.players[i] !== player) {
+                maxOpponentScore = Math.max(maxOpponentScore, state.players[i].score);
+            }
+        }
+        return maxOpponentScore;
+    }
+    
+    _findHighValueBuyMove(moves, state, player) {
+        let candidates = [];
+        
+        // Collect high-value buying moves
+        for (let move of moves) {
+            if ((move.action === 'buy_available' || move.action === 'buy_reserved') && move.card) {
+                const card = move.card;
+                const netCost = this._calculateNetCost(move.gems);
+                
+                // Calculate a value score
+                let valueScore = 0;
+                
+                // Base score from points, heavily weighted
+                valueScore += card.points * 5;
+                
+                // Early game: prefer cards with at least 2 points
+                if (this.gamePhase === 'early' && card.points >= 2) {
+                    valueScore += 2;
+                }
+                
+                // Mid/late game: high priority on 3+ point cards
+                if (this.gamePhase !== 'early' && card.points >= 3) {
+                    valueScore += 5;
+                }
+                
+                // Cost efficiency bonus
+                if (netCost > 0) {
+                    const efficiency = card.points / netCost;
+                    valueScore += efficiency * 3;
+                } else {
+                    // Free cards are great!
+                    valueScore += 5;
+                }
+                
+                // Adjust based on tier in early game
+                if (this.gamePhase === 'early' && card.tier === 3) {
+                    valueScore -= 2; // Penalty for tier 3 in early game
+                }
+                
+                // Add to candidates if it's a decent value
+                if ((card.points >= 2) || (card.points > 0 && netCost <= 3)) {
+                    candidates.push({
+                        move: move,
+                        valueScore: valueScore,
+                        points: card.points,
+                        netCost: netCost
+                    });
+                }
+            }
+        }
+        
+        if (candidates.length === 0) {
+            return null;
+        }
+        
+        // Sort by value score (highest first)
+        candidates.sort((a, b) => b.valueScore - a.valueScore);
+        
+        // Return the highest value move
+        return candidates[0].move;
+    }
+    
+    _findPointBuyMove(moves, state) {
+        let pointMoves = [];
+        
+        for (let move of moves) {
+            if ((move.action === 'buy_available' || move.action === 'buy_reserved') && move.card && move.card.points > 0) {
+                pointMoves.push({
+                    move: move,
+                    points: move.card.points,
+                    cost: this._calculateNetCost(move.gems)
+                });
+            }
+        }
+        
+        if (pointMoves.length === 0) {
+            return null;
+        }
+        
+        // Sort by points (highest first), then by cost (lowest first)
+        pointMoves.sort((a, b) => {
+            if (a.points !== b.points) {
+                return b.points - a.points;
+            }
+            return a.cost - b.cost;
+        });
+        
+        return pointMoves[0].move;
+    }
+    
+    _findHighPointReserveMove(moves, state) {
+        let bestReserveMove = null;
+        let bestPoints = 0;
+        
+        // Try to reserve visible high-point cards
+        for (let move of moves) {
+            if (move.action === 'reserve' && move.index !== -1) {
+                const card = state.cards_in_market[move.tier][move.index];
+                if (card.points > bestPoints) {
+                    bestPoints = card.points;
+                    bestReserveMove = move;
+                }
+            }
+        }
+        
+        // If no good visible cards, try blind reserve of tier 3
+        if (bestPoints < 3) {
+            for (let move of moves) {
+                if (move.action === 'reserve' && move.tier === 3 && move.index === -1) {
+                    return move;
+                }
+            }
+        }
+        
+        return bestReserveMove;
+    }
+    
+    _isCardValid(card, state) {
         if (!card) return false;
         
+        // Check if card is still in market
         const tier = card.tier;
         for (let marketCard of state.cards_in_market[tier]) {
             if (this._isSameCard(card, marketCard)) {
@@ -454,22 +601,367 @@ class AggroAI {
         return false;
     }
     
+    _findBestTargetCard(state, player) {
+        // Get all cards in the market
+        let allCards = [];
+        for (let tier = 1; tier <= 3; tier++) {
+            for (let card of state.cards_in_market[tier]) {
+                // Skip 0 point cards in mid-late game
+                if (this.gamePhase !== 'early' && card.points === 0) {
+                    continue;
+                }
+                
+                allCards.push(card);
+            }
+        }
+        
+        if (allCards.length === 0) {
+            return null;
+        }
+        
+        // Calculate efficiency and attainability for each card
+        let candidates = allCards.map(card => {
+            // Calculate total gem cost
+            let totalCost = 0;
+            for (let color of colours) {
+                totalCost += card.gems[color] || 0;
+            }
+            
+            // Avoid division by zero
+            if (totalCost === 0) totalCost = 1;
+            
+            // Calculate how attainable the card is
+            const attainabilityScore = this._calculateAttainabilityScore(card, state, player);
+            
+            // Calculate efficiency (points per gem)
+            const efficiency = card.points / totalCost;
+            
+            // Calculate overall score - weight depends on game phase
+            let overallScore;
+            if (this.gamePhase === 'early') {
+                overallScore = (efficiency * 2) + (attainabilityScore * 1);
+            } else if (this.gamePhase === 'mid') {
+                overallScore = (efficiency * 1.5) + (card.points * 0.5) + (attainabilityScore * 1);
+            } else { // late game
+                overallScore = (card.points * 1) + (attainabilityScore * 1.5);
+            }
+            
+            return {
+                card: card,
+                efficiency: efficiency,
+                attainability: attainabilityScore,
+                overallScore: overallScore,
+                points: card.points
+            };
+        });
+        
+        // Sort by overall score (highest first)
+        candidates.sort((a, b) => b.overallScore - a.overallScore);
+        
+        // Return the best candidate's card
+        return candidates.length > 0 ? candidates[0].card : null;
+    }
+    
+    _calculateAttainabilityScore(card, state, player) {
+        // Calculate total gems needed for the card
+        let gemsNeeded = {};
+        let totalNeeded = 0;
+        
+        for (let color of colours) {
+            const required = card.gems[color] || 0;
+            const discount = player.card_colours[color] || 0;
+            const playerGems = player.gems[color] || 0;
+            
+            // Net needed = required - discount - player's current gems
+            let netNeeded = Math.max(0, required - discount - playerGems);
+            
+            if (netNeeded > 0) {
+                gemsNeeded[color] = netNeeded;
+                totalNeeded += netNeeded;
+            }
+        }
+        
+        // Check how many gems we can get from the bank
+        let gemsAvailable = 0;
+        let goldNeeded = 0;
+        
+        for (let color of colours) {
+            if (gemsNeeded[color] > 0) {
+                const bankGems = state.supply_gems[color] || 0;
+                
+                if (bankGems >= gemsNeeded[color]) {
+                    gemsAvailable += gemsNeeded[color];
+                } else {
+                    gemsAvailable += bankGems;
+                    goldNeeded += (gemsNeeded[color] - bankGems);
+                }
+            }
+        }
+        
+        // Consider player's gold gems
+        const playerGold = player.gems.gold || 0;
+        const totalGoldAvailable = Math.min(goldNeeded, playerGold);
+        
+        // Calculate attainability score (0-10)
+        // 10 = can buy now, 0 = can't get even with all gems from bank
+        if (totalNeeded === 0) {
+            return 10; // Can buy now
+        }
+        
+        const totalGemsAttainable = gemsAvailable + totalGoldAvailable;
+        const attainabilityRatio = totalGemsAttainable / totalNeeded;
+        
+        // Convert to 0-10 scale
+        return Math.min(10, Math.max(0, attainabilityRatio * 10));
+    }
+    
+    _findSupportBuyMove(moves, state, player) {
+        // Buy cards that help with permanent gems or are cheap
+        let supportMoves = [];
+        
+        for (let move of moves) {
+            if ((move.action === 'buy_available' || move.action === 'buy_reserved') && move.card) {
+                const card = move.card;
+                const netCost = this._calculateNetCost(move.gems);
+                
+                // Skip expensive 0-point cards in mid-late game
+                if (this.gamePhase !== 'early' && card.points === 0 && netCost > 3) {
+                    continue;
+                }
+                
+                // Calculate support score
+                let supportScore = 0;
+                
+                // Low-cost cards are good
+                if (netCost <= 2) {
+                    supportScore += 3;
+                } else if (netCost <= 4) {
+                    supportScore += 1;
+                }
+                
+                // Points are good
+                supportScore += card.points * 2;
+                
+                // If we have a target card, permanent gems that help are good
+                if (this.targetCard) {
+                    const targetCardColor = this._findMajorityColor(this.targetCard.gems);
+                    if (targetCardColor && card.colour === targetCardColor) {
+                        supportScore += 4;
+                    }
+                }
+                
+                supportMoves.push({
+                    move: move,
+                    supportScore: supportScore,
+                    netCost: netCost,
+                    points: card.points
+                });
+            }
+        }
+        
+        if (supportMoves.length === 0) {
+            return null;
+        }
+        
+        // Sort by support score (highest first)
+        supportMoves.sort((a, b) => b.supportScore - a.supportScore);
+        
+        return supportMoves[0].move;
+    }
+    
+    _findBestGemMove(moves, state, player) {
+        // Get all gem-taking moves
+        let gemMoves = moves.filter(move => move.action === 'gems');
+        if (gemMoves.length === 0) {
+            return null;
+        }
+        
+        // Calculate what gems we need for attainable cards
+        let targetNeededGems = {};
+        if (this.targetCard) {
+            // Calculate needed gems for target card
+            for (let color of colours) {
+                const required = this.targetCard.gems[color] || 0;
+                const discount = player.card_colours[color] || 0;
+                const playerGems = player.gems[color] || 0;
+                
+                // Net needed = required - discount - player's current gems
+                let netNeeded = Math.max(0, required - discount - playerGems);
+                
+                if (netNeeded > 0) {
+                    targetNeededGems[color] = netNeeded;
+                }
+            }
+        }
+        
+        // Find short-term attainable cards
+        const attainableCards = this._findPotentialCards(state, player);
+        
+        // Score each gem move
+        let bestMove = null;
+        let bestScore = -1;
+        
+        for (let move of moves) {
+            if (move.action !== 'gems') continue;
+            
+            let score = 0;
+            
+            // Score based on target card needs
+            if (this.targetCard) {
+                for (let color in move.gems) {
+                    if (move.gems[color] > 0 && targetNeededGems[color] > 0) {
+                        score += 2 * move.gems[color];
+                    }
+                }
+            }
+            
+            // Score based on attainable cards
+            for (let attainableCard of attainableCards) {
+                for (let color in move.gems) {
+                    if (move.gems[color] > 0 && attainableCard.neededGems[color] > 0) {
+                        score += 1 * move.gems[color];
+                        
+                        // Extra bonus for high-point cards
+                        score += 0.2 * attainableCard.card.points * move.gems[color];
+                    }
+                }
+            }
+            
+            // Base score for each gem (taking something is better than nothing)
+            for (let color in move.gems) {
+                score += 0.1 * move.gems[color];
+            }
+            
+            // Bonus for taking different gems than last time (avoid repetition)
+            let diversityBonus = true;
+            for (let color in move.gems) {
+                if (move.gems[color] > 0 && this.lastGemColors.includes(color)) {
+                    diversityBonus = false;
+                    break;
+                }
+            }
+            if (diversityBonus && this.lastGemColors.length > 0) {
+                score += 1;
+            }
+            
+            // Penalty for taking too many of one color
+            for (let color in move.gems) {
+                if (move.gems[color] > 0 && player.gems[color] >= 4) {
+                    score -= 1;
+                }
+            }
+            
+            if (score > bestScore) {
+                bestScore = score;
+                bestMove = move;
+            }
+        }
+        
+        return bestMove;
+    }
+    
+    _findPotentialCards(state, player) {
+        let potentialCards = [];
+        
+        // Check each card in the market
+        for (let tier = 1; tier <= 3; tier++) {
+            for (let card of state.cards_in_market[tier]) {
+                // Skip 0 point cards in late game
+                if (this.gamePhase === 'late' && card.points === 0) {
+                    continue;
+                }
+                
+                // Calculate what gems we still need for this card
+                let neededGems = {};
+                let totalNeeded = 0;
+                
+                for (let color of colours) {
+                    const required = card.gems[color] || 0;
+                    const discount = player.card_colours[color] || 0;
+                    const playerGems = player.gems[color] || 0;
+                    
+                    // Net needed = required - discount - player's current gems
+                    let netNeeded = Math.max(0, required - discount - playerGems);
+                    
+                    if (netNeeded > 0) {
+                        neededGems[color] = netNeeded;
+                        totalNeeded += netNeeded;
+                    }
+                }
+                
+                // If we need 4 or fewer gems total, consider it attainable soon
+                if (totalNeeded <= 4) {
+                    potentialCards.push({
+                        card: card,
+                        neededGems: neededGems,
+                        totalNeeded: totalNeeded
+                    });
+                }
+            }
+        }
+        
+        // Sort by total gems needed (fewer is better)
+        potentialCards.sort((a, b) => {
+            // First sort by gems needed
+            if (a.totalNeeded !== b.totalNeeded) {
+                return a.totalNeeded - b.totalNeeded;
+            }
+            // Then by points (higher is better)
+            return b.card.points - a.card.points;
+        });
+        
+        // Return top 3 potential cards
+        return potentialCards.slice(0, 3);
+    }
+    
+    _findMajorityColor(gems) {
+        let maxCount = 0;
+        let majorityColor = null;
+        
+        for (let color of colours) {
+            const count = gems[color] || 0;
+            if (count > maxCount) {
+                maxCount = count;
+                majorityColor = color;
+            }
+        }
+        
+        return majorityColor;
+    }
+    
+    _calculateNetCost(gems) {
+        let total = 0;
+        for (let color in gems) {
+            total += gems[color] || 0;
+        }
+        return total;
+    }
+    
+    _totalGemCost(gems) {
+        let total = 0;
+        for (let color in gems) {
+            total += gems[color];
+        }
+        return total;
+    }
+    
     _isSameCard(card1, card2) {
         if (!card1 || !card2) return false;
         
         // Compare tier, color, points and gem costs
-        return card1.tier === card2.tier && 
-               card1.colour === card2.colour &&
-               card1.points === card2.points &&
-               this._haveSameGemCost(card1, card2);
-    }
-    
-    _haveSameGemCost(card1, card2) {
+        if (card1.tier !== card2.tier || 
+            card1.colour !== card2.colour || 
+            card1.points !== card2.points) {
+            return false;
+        }
+        
+        // Compare gem costs
         for (let color of colours) {
             if ((card1.gems[color] || 0) !== (card2.gems[color] || 0)) {
                 return false;
             }
         }
+        
         return true;
     }
     
@@ -485,78 +977,259 @@ class AggroAI {
         
         return `Tier ${card.tier} ${card.colour} card with ${card.points} points (${gemDesc.slice(0, -2)})`;
     }
+}
+
+class ColorBot {
+    constructor() {
+        this.name = "Color Bot";
+        this.lockedColors = null; // Will store the two colors we're focusing on
+        this.targetCards = null;  // Will store the two most efficient cards we're targeting
+        this.gamePhase = 'early'; // Track game phase: 'early', 'mid', 'late'
+        this.turnCount = 0;       // Track number of turns for phase transitions
+    }
     
-    _findBestWinCondition(state) {
-        const player = state.players[state.current_player_index];
-        let candidates = [];
+    make_move(state) {
+        let moves = state.get_valid_moves();
+        let player = state.players[state.current_player_index];
         
-        // Check tier 3 cards first
-        for (let card of state.cards_in_market[3]) {
-            // Check for 7 single gem or 6,3,3 composition
-            if (this._hasSingleColor7Gems(card) || this._has633GemDistribution(card)) {
-                candidates.push(card);
+        // Update turn count and game phase
+        this.turnCount++;
+        this._updateGamePhase(player);
+        
+        // Check for winning moves first
+        let winning_moves = [];
+        for (let move of moves) {
+            let new_state = state.copy();
+            new_state.make_move(move);
+            if (new_state.players[state.current_player_index].score >= 15) {
+                winning_moves.push(move);
             }
         }
         
-        // If no tier 3 candidates, check tier 2 cards
-        if (candidates.length === 0) {
-            for (let card of state.cards_in_market[2]) {
-                // Check for 5 single gem, 6 single gem, or 2,4,1 composition
-                if (this._hasSingleColor5Gems(card) || 
-                    this._hasSingleColor6Gems(card) || 
-                    this._has241GemDistribution(card)) {
-                    candidates.push(card);
+        if (winning_moves.length > 0) {
+            return winning_moves[0];
+        }
+        
+        // If we haven't locked in our colors yet, do that first
+        if (!this.lockedColors) {
+            this._lockColors(state);
+        }
+        
+        // Log our locked colors for debugging
+        if (this.lockedColors) {
+            console.log(`ColorBot locked colors: ${this.lockedColors[0]}, ${this.lockedColors[1]}`);
+            console.log(`ColorBot target cards: ${this._cardDescription(this.targetCards[0])}, ${this._cardDescription(this.targetCards[1])}`);
+            console.log(`Game phase: ${this.gamePhase}`);
+        }
+        
+        // First priority: Try to buy any high-value card (points ≥ 3 or tier 3 card)
+        // This makes the bot more opportunistic
+        const highValueBuyMove = this._findHighValueBuyMove(moves, state);
+        if (highValueBuyMove) {
+            return highValueBuyMove;
+        }
+        
+        // Try to buy a target card if possible
+        if (this.targetCards) {
+            const targetBuyMove = this._findTargetCardBuyMove(moves, state);
+            if (targetBuyMove) {
+                return targetBuyMove;
+            }
+        }
+        
+        // Try to buy a card that gives a permanent gem in our locked colors
+        // or a card that costs mainly one of our locked colors and has points
+        // More flexible approach with varied priorities by game phase
+        const strategicBuyMove = this._findStrategicBuyMove(moves, state);
+        if (strategicBuyMove) {
+            return strategicBuyMove;
+        }
+        
+        // Reserve one of our target cards if we have space, it's available, and in mid-game
+        if (this.targetCards && this.gamePhase !== 'early' && player.cards_in_hand.length < 3) {
+            const reserveMove = this._findTargetCardReserveMove(moves, state);
+            if (reserveMove) {
+                return reserveMove;
+            }
+        }
+        
+        // Take gems focused on our locked colors with smarter gem selection
+        const gemMove = this._findBestGemMove(moves, state, player);
+        if (gemMove) {
+            return gemMove;
+        }
+        
+        // Reserve any high-point card if we have space and are in late game
+        if (this.gamePhase === 'late' && player.cards_in_hand.length < 3) {
+            const reserveHighPointMove = this._findHighPointCardReserveMove(moves, state);
+            if (reserveHighPointMove) {
+                return reserveHighPointMove;
+            }
+        }
+        
+        // Fallback to any move
+        return moves[0];
+    }
+    
+    _updateGamePhase(player) {
+        const totalScore = player.score;
+        const totalCards = player.cards_played.length;
+        
+        if (totalScore >= 9 || this.turnCount > 15) {
+            this.gamePhase = 'late';
+        } else if (totalScore >= 4 || totalCards >= 4 || this.turnCount > 8) {
+            this.gamePhase = 'mid';
+        } else {
+            this.gamePhase = 'early';
+        }
+    }
+    
+    _lockColors(state) {
+        const player = state.players[state.current_player_index];
+        
+        // Find the two most efficient cards in the market
+        let cardEfficiencies = [];
+        
+        // Check all cards in the market
+        for (let tier = 1; tier <= 3; tier++) {
+            for (let card of state.cards_in_market[tier]) {
+                // Calculate total gem cost
+                let totalCost = 0;
+                for (let color of colours) {
+                    totalCost += card.gems[color] || 0;
+                }
+                
+                // Skip cards with no cost to avoid division by zero
+                if (totalCost === 0) continue;
+                
+                // Calculate points per gem ratio
+                const efficiency = card.points / totalCost;
+                
+                // Find the majority color in the card's cost
+                let majorityColor = this._findMajorityColor(card.gems);
+                
+                cardEfficiencies.push({
+                    card: card,
+                    efficiency: efficiency,
+                    majorityColor: majorityColor
+                });
+            }
+        }
+        
+        // Sort by efficiency (highest first)
+        cardEfficiencies.sort((a, b) => b.efficiency - a.efficiency);
+        
+        // If we don't have at least two cards, use default colors
+        if (cardEfficiencies.length < 2) {
+            this.lockedColors = ['red', 'blue']; // Default to red and blue
+            this.targetCards = [null, null];
+            return;
+        }
+        
+        // Take the two most efficient cards
+        const topCard = cardEfficiencies[0];
+        const secondCard = cardEfficiencies[1];
+        
+        // Also consider the colors that appear most frequently in the market
+        const colorCounts = this._analyzeMarketColors(state);
+        
+        // Determine the two colors to lock in
+        let color1 = topCard.majorityColor;
+        let color2;
+        
+        if (secondCard.majorityColor !== color1) {
+            color2 = secondCard.majorityColor;
+        } else {
+            // If both top cards have the same majority color,
+            // choose the most frequent color in the market as the second color
+            let availableColors = [...colours];
+            availableColors.splice(availableColors.indexOf(color1), 1);
+            
+            // Sort by frequency in the market
+            availableColors.sort((a, b) => colorCounts[b] - colorCounts[a]);
+            color2 = availableColors[0];
+        }
+        
+        this.lockedColors = [color1, color2];
+        this.targetCards = [topCard.card, secondCard.card];
+    }
+    
+    _analyzeMarketColors(state) {
+        // Count how many times each color appears as a primary cost in the market
+        const colorCounts = {
+            'white': 0,
+            'blue': 0,
+            'green': 0,
+            'red': 0,
+            'black': 0
+        };
+        
+        for (let tier = 1; tier <= 3; tier++) {
+            for (let card of state.cards_in_market[tier]) {
+                const majorityColor = this._findMajorityColor(card.gems);
+                if (majorityColor) {
+                    colorCounts[majorityColor]++;
                 }
             }
         }
         
-        // If no candidates found, return null
-        if (candidates.length === 0) {
+        return colorCounts;
+    }
+    
+    _findMajorityColor(gems) {
+        let maxCount = 0;
+        let majorityColor = null;
+        
+        for (let color of colours) {
+            const count = gems[color] || 0;
+            if (count > maxCount) {
+                maxCount = count;
+                majorityColor = color;
+            }
+        }
+        
+        return majorityColor;
+    }
+    
+    _findHighValueBuyMove(moves, state) {
+        let highValueMoves = [];
+        
+        for (let move of moves) {
+            if ((move.action === 'buy_available' || move.action === 'buy_reserved') && move.card) {
+                // Consider any card with 3+ points or tier 3 as high value
+                if (move.card.points >= 3 || move.card.tier === 3) {
+                    highValueMoves.push({
+                        move: move,
+                        points: move.card.points,
+                        netCost: this._calculateNetGemCost(move.gems)
+                    });
+                }
+            }
+        }
+        
+        if (highValueMoves.length === 0) {
             return null;
         }
         
-        // Sort by tier first, then points
-        candidates.sort((a, b) => {
-            if (a.tier !== b.tier) {
-                return b.tier - a.tier; // Higher tier first
+        // Sort by points (highest first), then by net cost (lowest first)
+        highValueMoves.sort((a, b) => {
+            if (a.points !== b.points) {
+                return b.points - a.points;
             }
-            return b.points - a.points; // Higher points second
+            return a.netCost - b.netCost;
         });
         
-        return candidates[0];
+        return highValueMoves[0].move;
     }
     
-    _findReservedWinCondition(player) {
-        for (let card of player.cards_in_hand) {
-            // Check if this reserved card matches our win condition criteria
-            if (card.tier === 3 && (this._hasSingleColor7Gems(card) || this._has633GemDistribution(card))) {
-                return card;
-            }
-            
-            if (card.tier === 2 && (this._hasSingleColor5Gems(card) || 
-                                    this._hasSingleColor6Gems(card) || 
-                                    this._has241GemDistribution(card))) {
-                return card;
-            }
-        }
+    _findTargetCardBuyMove(moves, state) {
+        if (!this.targetCards) return null;
         
-        return null;
-    }
-    
-    _getReserveMoveForCard(card, moves, state) {
-        if (!card) return null;
-        
-        // Find the card's position in the market
-        const tier = card.tier;
-        for (let index = 0; index < state.cards_in_market[tier].length; index++) {
-            const marketCard = state.cards_in_market[tier][index];
-            
-            if (this._isSameCard(card, marketCard)) {
-                // Find a reserve move for this card
-                for (let move of moves) {
-                    if (move.action === 'reserve' && 
-                        move.tier === tier && 
-                        move.index === index) {
+        // Look for moves that buy one of our target cards
+        for (let move of moves) {
+            if ((move.action === 'buy_available' || move.action === 'buy_reserved') && move.card) {
+                for (let targetCard of this.targetCards) {
+                    if (targetCard && this._isSameCard(move.card, targetCard)) {
                         return move;
                     }
                 }
@@ -566,114 +1239,217 @@ class AggroAI {
         return null;
     }
     
-    _getBuyReservedMove(card, moves) {
-        if (!card) return null;
+    _findTargetCardReserveMove(moves, state) {
+        if (!this.targetCards) return null;
         
-        // Find the reserved card index
-        for (let move of moves) {
-            if (move.action === 'buy_reserved' && move.card && this._isSameCard(card, move.card)) {
-                return move;
+        // Look for moves that reserve one of our target cards
+        for (let targetCard of this.targetCards) {
+            if (!targetCard) continue;
+            
+            // Find the card's position in the market
+            const tier = targetCard.tier;
+            for (let index = 0; index < state.cards_in_market[tier].length; index++) {
+                const marketCard = state.cards_in_market[tier][index];
+                
+                if (this._isSameCard(marketCard, targetCard)) {
+                    // Look for a reserve move for this card
+                    for (let move of moves) {
+                        if (move.action === 'reserve' && 
+                            move.tier === tier && 
+                            move.index === index) {
+                            return move;
+                        }
+                    }
+                }
             }
         }
         
         return null;
     }
     
-    _colorHelpsWithWinCondition(color, winCondition, player) {
-        if (!winCondition) return false;
+    _findHighPointCardReserveMove(moves, state) {
+        let bestReserveMove = null;
+        let bestPoints = 0;
         
-        // Check if the win condition requires this color
-        return (winCondition.gems[color] || 0) > (player.card_colours[color] || 0);
-    }
-    
-    _findHelpfulCardPurchase(moves, state) {
-        if (!this.winConditionCard) return null;
-        
-        const player = state.players[state.current_player_index];
-        let helpfulMoves = [];
-        
-        // Look for cards that provide permanent gems that help with our win condition
         for (let move of moves) {
-            if ((move.action === 'buy_available' || move.action === 'buy_reserved') && move.card) {
-                // Check if this card's color helps with our win condition
-                if (this._colorHelpsWithWinCondition(move.card.colour, this.winConditionCard, player)) {
-                    helpfulMoves.push(move);
+            if (move.action === 'reserve' && move.tier > 1) { // Focus on tier 2-3 cards
+                // If we can see the card
+                if (move.index !== -1) {
+                    const card = state.cards_in_market[move.tier][move.index];
+                    if (card.points > bestPoints) {
+                        bestPoints = card.points;
+                        bestReserveMove = move;
+                    }
+                } else if (move.tier === 3 && !bestReserveMove) {
+                    // Blind reserve of tier 3 if nothing better
+                    bestReserveMove = move;
                 }
             }
         }
         
-        if (helpfulMoves.length === 0) {
+        return bestReserveMove;
+    }
+    
+    _findStrategicBuyMove(moves, state) {
+        if (!this.lockedColors) return null;
+        
+        const player = state.players[state.current_player_index];
+        let candidateMoves = [];
+        
+        // Look at each buying move
+        for (let move of moves) {
+            if ((move.action === 'buy_available' || move.action === 'buy_reserved') && move.card) {
+                const card = move.card;
+                const netCost = this._calculateNetGemCost(move.gems);
+                
+                // Calculate a strategic score for each card
+                let strategicScore = 0;
+                
+                // Base score from card's points
+                strategicScore += card.points * 2;
+                
+                // Permanent gem color is one of our locked colors
+                if (this.lockedColors.includes(card.colour)) {
+                    strategicScore += 3;
+                    
+                    // Extra bonus if we're in early game
+                    if (this.gamePhase === 'early') {
+                        strategicScore += 2;
+                    }
+                }
+                
+                // Card's majority cost is one of our locked colors
+                const majorityColor = this._findMajorityColor(card.gems);
+                if (majorityColor && this.lockedColors.includes(majorityColor)) {
+                    strategicScore += 1;
+                    
+                    // Extra bonus for point cards
+                    if (card.points > 0) {
+                        strategicScore += 1;
+                    }
+                }
+                
+                // Bonus for tier 1 in early game
+                if (this.gamePhase === 'early' && card.tier === 1) {
+                    strategicScore += 1;
+                }
+                
+                // Penalty for expensive cards in early game
+                if (this.gamePhase === 'early' && netCost > 5) {
+                    strategicScore -= 2;
+                }
+                
+                // Add to candidates if it has any strategic value
+                if (strategicScore > 0) {
+                    candidateMoves.push({
+                        move: move,
+                        strategicScore: strategicScore,
+                        netCost: netCost,
+                        points: card.points,
+                        tier: card.tier
+                    });
+                }
+            }
+        }
+        
+        if (candidateMoves.length === 0) {
             return null;
         }
         
-        // Sort by cost (cheapest first)
-        helpfulMoves.sort((a, b) => {
-            const aCost = this._calculateGemCost(a.gems);
-            const bCost = this._calculateGemCost(b.gems);
-            
-            if (aCost !== bCost) {
-                return aCost - bCost; // Cheapest first
+        // Sort by strategic score (higher is better)
+        // Break ties with net cost (lower is better), then points (higher is better)
+        candidateMoves.sort((a, b) => {
+            if (a.strategicScore !== b.strategicScore) {
+                return b.strategicScore - a.strategicScore;
             }
-            
-            // If same cost, prefer higher points
-            return (b.card.points || 0) - (a.card.points || 0);
+            if (a.netCost !== b.netCost) {
+                return a.netCost - b.netCost;
+            }
+            return b.points - a.points;
         });
         
-        return helpfulMoves[0];
+        return candidateMoves[0].move;
     }
     
-    _calculateGemCost(gems) {
+    _calculateNetGemCost(moveGems) {
         let total = 0;
-        for (let color of all_colours) {
-            total += gems[color] || 0;
+        for (let color in moveGems) {
+            total += moveGems[color];
         }
         return total;
     }
     
-    _findHelpfulGemMove(moves, state) {
-        if (!this.winConditionCard) return null;
+    _findBestGemMove(moves, state, player) {
+        if (!this.lockedColors) return null;
         
-        const player = state.players[state.current_player_index];
-        const gemMoves = moves.filter(move => move.action === 'gems');
-        
+        // Get all gem-taking moves
+        let gemMoves = moves.filter(move => move.action === 'gems');
         if (gemMoves.length === 0) {
             return null;
         }
         
-        // Calculate what gems we need for our win condition
-        let neededGems = {};
-        let totalNeeded = 0;
+        // Calculate what cards we could potentially buy soon
+        const potentialCards = this._findPotentialCards(state, player);
         
-        for (let color of colours) {
-            // Check how many gems of this color we need
-            const required = this.winConditionCard.gems[color] || 0;
-            const discount = player.card_colours[color] || 0;
-            const playerGems = player.gems[color] || 0;
-            
-            // We need: (requirement - discount - current gems)
-            const stillNeeded = Math.max(0, required - discount - playerGems);
-            
-            if (stillNeeded > 0) {
-                neededGems[color] = stillNeeded;
-                totalNeeded += stillNeeded;
-            }
-        }
-        
-        // Score each gem move by how helpful it is
+        // Score each gem move based on how well it helps with our color strategy
         let bestMove = null;
         let bestScore = -1;
         
         for (let move of gemMoves) {
             let score = 0;
             
+            // Base score from the gems themselves
             for (let color in move.gems) {
-                if (move.gems[color] > 0 && neededGems[color] > 0) {
-                    // Award points based on how much this helps with our needed gems
-                    score += Math.min(move.gems[color], neededGems[color]);
+                if (move.gems[color] > 0) {
+                    // Core colors get a bonus
+                    if (this.lockedColors.includes(color)) {
+                        score += 2 * move.gems[color];
+                    } else {
+                        score += 0.5 * move.gems[color];
+                    }
                     
-                    // Bonus for taking 2 of a color we need a lot of
-                    if (move.gems[color] === 2 && neededGems[color] >= 3) {
-                        score += 1;
+                    // Bonus for colors needed by potential cards
+                    for (let potentialCard of potentialCards) {
+                        if (potentialCard.neededGems[color] > 0) {
+                            score += 1 * move.gems[color];
+                            
+                            // Extra bonus if the card gives a permanent gem in our locked colors
+                            if (this.lockedColors.includes(potentialCard.card.colour)) {
+                                score += 0.5 * move.gems[color];
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Special case: taking 2 of a locked color
+            for (let color of this.lockedColors) {
+                if (move.gems[color] === 2) {
+                    score += 2; // Bonus for double gems in our focus colors
+                }
+            }
+            
+            // Special case: taking 3 different gems
+            let totalDifferentGems = 0;
+            for (let color in move.gems) {
+                if (move.gems[color] === 1) {
+                    totalDifferentGems++;
+                }
+            }
+            if (totalDifferentGems === 3) {
+                score += 1.5; // Bonus for diversity when taking 3 different gems
+            }
+            
+            // Account for player's current gem count to avoid waste
+            for (let color in move.gems) {
+                if (move.gems[color] > 0) {
+                    // Penalty if player already has many of this gem (5+)
+                    if (player.gems[color] >= 5) {
+                        score -= 1.5 * move.gems[color];
+                    }
+                    // Slight penalty if player already has some of this gem (3-4)
+                    else if (player.gems[color] >= 3) {
+                        score -= 0.5 * move.gems[color];
                     }
                 }
             }
@@ -684,92 +1460,92 @@ class AggroAI {
             }
         }
         
-        // If we found a helpful move, return it
-        if (bestMove && bestScore > 0) {
-            return bestMove;
-        }
-        
-        // Otherwise, return the first gem move
-        return gemMoves[0];
+        return bestMove;
     }
     
-    _hasSingleColor7Gems(card) {
-        if (!card) return false;
+    _findPotentialCards(state, player) {
+        let potentialCards = [];
         
-        for (let color of colours) {
-            if (card.gems[color] === 7) {
-                return true;
-            }
-        }
-        return false;
-    }
-    
-    _has633GemDistribution(card) {
-        if (!card) return false;
-        
-        // Count gems by color
-        let counts = {};
-        let totalGems = 0;
-        
-        for (let color of colours) {
-            const count = card.gems[color] || 0;
-            if (count > 0) {
-                counts[count] = (counts[count] || 0) + 1;
-                totalGems += count;
-            }
-        }
-        
-        // Check for 6,3,3 pattern (one color with 6, two colors with 3 each)
-        return counts[6] === 1 && counts[3] === 2 && totalGems === 12;
-    }
-    
-    _hasSingleColor6Gems(card) {
-        if (!card) return false;
-        
-        for (let color of colours) {
-            if (card.gems[color] === 6) {
-                return true;
-            }
-        }
-        return false;
-    }
-    
-    _hasSingleColor5Gems(card) {
-        if (!card) return false;
-        
-        for (let color of colours) {
-            if (card.gems[color] === 5) {
-                return true;
-            }
-        }
-        return false;
-    }
-    
-    _has241GemDistribution(card) {
-        if (!card) return false;
-        
-        // Count gems by color
-        let counts = {};
-        let totalGems = 0;
-        
-        for (let color of colours) {
-            const count = card.gems[color] || 0;
-            if (count > 0) {
-                counts[count] = (counts[count] || 0) + 1;
-                totalGems += count;
+        // Check each card in the market
+        for (let tier = 1; tier <= 3; tier++) {
+            for (let card of state.cards_in_market[tier]) {
+                // Calculate what gems we still need for this card
+                let neededGems = {};
+                let totalNeeded = 0;
+                
+                for (let color of colours) {
+                    const required = card.gems[color] || 0;
+                    const discount = player.card_colours[color] || 0;
+                    const playerGems = player.gems[color] || 0;
+                    
+                    // Net needed = required - discount - player's current gems
+                    let netNeeded = Math.max(0, required - discount - playerGems);
+                    
+                    if (netNeeded > 0) {
+                        neededGems[color] = netNeeded;
+                        totalNeeded += netNeeded;
+                    }
+                }
+                
+                // If we need 5 or fewer gems total, consider it a potential card
+                if (totalNeeded <= 5) {
+                    potentialCards.push({
+                        card: card,
+                        neededGems: neededGems,
+                        totalNeeded: totalNeeded
+                    });
+                }
             }
         }
         
-        // Check for 2,4,1 pattern
-        return counts[2] === 1 && counts[4] === 1 && counts[1] === 1 && totalGems === 7;
+        // Sort by total gems needed (fewer is better)
+        potentialCards.sort((a, b) => a.totalNeeded - b.totalNeeded);
+        
+        // Return the top 3 potential cards
+        return potentialCards.slice(0, 3);
+    }
+    
+    _isSameCard(card1, card2) {
+        if (!card1 || !card2) return false;
+        
+        // Compare tier, color, points and gem costs
+        if (card1.tier !== card2.tier || 
+            card1.colour !== card2.colour || 
+            card1.points !== card2.points) {
+            return false;
+        }
+        
+        // Compare gem costs
+        for (let color of colours) {
+            if ((card1.gems[color] || 0) !== (card2.gems[color] || 0)) {
+                return false;
+            }
+        }
+        
+        return true;
+    }
+    
+    _cardDescription(card) {
+        if (!card) return "no card";
+        
+        let gemDesc = "";
+        for (let color of colours) {
+            if (card.gems[color] > 0) {
+                gemDesc += `${card.gems[color]} ${color}, `;
+            }
+        }
+        
+        return `Tier ${card.tier} ${card.colour} card with ${card.points} points (${gemDesc.slice(0, -2)})`;
     }
 }
 
 // Create bot instances
 ai_neural = new NeuralNetAI('', state_vector_v02);
-ai_random = new RandomAI();
+ai_random = new PointRushAI(); // Replace RandomAI with PointRushAI for backward compatibility
 ai_greedy = new GreedyAI();
-ai_aggro = new AggroAI();
+ai_aggro = new PointRushAI(); // Replace AggroAI with PointRushAI for backward compatibility
+ai_point_rush = new PointRushAI();
+ai_color = new ColorBot();
 
 // Default AI
 ai = ai_neural;
