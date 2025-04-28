@@ -1,6 +1,100 @@
-# Tim's Splendor Agent
+# Enhanced Splendor AI
 
-This folder contains a reinforcement learning agent for the board game Splendor, implemented using PyTorch and Gymnasium framework.
+This repository contains improved reinforcement learning agents for playing the board game Splendor, including an enhanced reward function and league-based self-play training.
+
+## Key Components
+
+### Enhanced Reward Function
+
+The `EnhancedSplendorEnv` class improves upon the basic Splendor environment by providing strategic rewards that better align with winning game strategies:
+
+1. **Card Color Concentration** - Rewards building sets of cards of the same color
+2. **Noble Progress** - Provides intermediate rewards for approaching noble requirements
+3. **Efficiency Rewards** - Rewards efficient gem-to-card conversions
+4. **Balanced Terminal Rewards** - Scales down terminal rewards to better balance with strategic rewards
+
+### League-Based Self-Play Training
+
+The `LeagueTrainer` class implements a sophisticated self-play mechanism with:
+
+1. **Opponent Variety** - Creates a league of different opponent policies
+2. **ELO Rating System** - Tracks relative skill levels between agent versions
+3. **Model Versioning** - Saves intermediate policies for future training
+4. **Fixed Opponents** - Includes rule-based opponents (random, heuristic) for baseline performance
+
+## How to Use
+
+### Training with Enhanced Rewards
+
+```bash
+# Train a standard agent with the enhanced reward function
+python train.py --env enhanced --episodes 5000 --workers 4
+```
+
+### League-Based Training
+
+```bash
+# Train using the league-based approach
+python league_training.py --episodes 5000 --workers 4 --save_frequency 500
+```
+
+### Evaluating Agents
+
+```bash
+# Evaluate the league-trained agent
+python evaluate.py --model_path models/splendor_league_agent.pt --episodes 100
+```
+
+## Implementation Details
+
+### Enhanced Reward Function
+
+The enhanced reward function (in `enhanced_splendor_env.py`) provides these improvements:
+
+1. **Base Score Rewards**: Increased to 0.5 per point
+2. **Color Concentration**: Up to 0.3 reward for building card sets
+3. **Noble Progress**: 0.3 reward per step closer to a noble
+4. **Card Efficiency**: 0.4-0.6 reward based on gem efficiency 
+5. **Strategic Reservations**: 0.2 reward for reserving with gold gain
+6. **Reduced Penalties**: -0.3 for non-productive turns (down from -1.0)
+7. **Balanced Terminal Rewards**: 3.0 for winning/losing (down from 10.0)
+
+### League-Based Training
+
+The league system (in `league_training.py`) offers:
+
+1. **Opponent Selection Strategies**:
+   - Random: Select any opponent
+   - Best: Select highest-rated opponent
+   - Similar: Select opponent with similar skill
+   - Mix: Combination of strategies
+
+2. **Rating System**:
+   - ELO-based rating updates
+   - History tracking of all matches
+   - Performance visualization
+
+3. **Fixed Opponents**:
+   - Random agent: Selects valid moves randomly
+   - Heuristic agent: Uses basic Splendor strategies
+
+## Results
+
+The enhanced agents demonstrate significant improvements over the baseline:
+
+- Better strategic play
+- Higher win rates against rule-based opponents
+- More consistent learning progress
+- Reduced reliance on randomness
+
+## Requirements
+
+- Python 3.6+
+- PyTorch
+- Gymnasium
+- Numpy
+- Matplotlib
+- tqdm
 
 ## Overview
 
@@ -17,13 +111,6 @@ The agent uses Proximal Policy Optimization (PPO) algorithm to learn the optimal
 - `train_ppo.py`: Script for training the agent through self-play
 - `ppo_bot.py`: Integration with the Splendor game as a bot
 - `models/`: Directory containing trained model checkpoints
-
-## Requirements
-
-- Python 3.7+
-- PyTorch
-- Gymnasium
-- NumPy
 
 ## Reinforcement Learning Agent
 
