@@ -39,11 +39,206 @@ class GreedyBot:
         Returns:
             action: The selected action index
         """
-        # Convert the action indices to the actual moves
-        valid_moves = list(valid_moves_mapping.keys())
+        # Need the game_state for proper evaluation
+        if game_state is None:
+            # If game_state not provided, just pick the first valid move as fallback
+            valid_moves = list(valid_moves_mapping.keys())
+            return valid_moves[0]
         
-        # If no clear strategy, just pick the first valid move
-        # This is a simple fallback strategy
+        valid_moves = list(valid_moves_mapping.keys())
+        current_player = game_state.current_player_index
+        
+        # Group moves by type for easier processing
+        buy_moves = []
+        reserve_moves = []
+        take_gems_moves = []
+        
+        for move_idx in valid_moves:
+            move_type = valid_moves_mapping[move_idx][0]
+            if move_type == "buy":
+                buy_moves.append(move_idx)
+            elif move_type == "reserve":
+                reserve_moves.append(move_idx)
+            elif move_type == "take_gems":
+                take_gems_moves.append(move_idx)
+                
+        # STRATEGY 1: Check if any move leads to immediate win (15+ points)
+        player_score = game_state.players[current_player].score
+        for move_idx in buy_moves:
+            move_details = valid_moves_mapping[move_idx]
+            # Extract card points from the move details
+            # Move format is typically ('buy', card_details)
+            card_points = 0
+            if len(move_details) > 1 and isinstance(move_details[1], dict) and 'points' in move_details[1]:
+                card_points = move_details[1]['points']
+            elif len(move_details) > 1 and hasattr(move_details[1], 'points'):
+                card_points = move_details[1].points
+                
+            # If this card gives enough points to win, buy it immediately
+            if player_score + card_points >= 15:
+                return move_idx
+        
+        # STRATEGY 2: Buy cards with highest points/cost ratio
+        best_card_move = None
+        best_value_ratio = -1
+        
+        for move_idx in buy_moves:
+            move_details = valid_moves_mapping[move_idx]
+            card = None
+            
+            # Extract card details from move
+            if len(move_details) > 1:
+                if isinstance(move_details[1], dict):
+                    card = move_details[1]
+                else:
+                    card = move_details[1]
+            
+            if card:
+                points = 0
+                total_cost = 0
+                
+                # Extract points
+                if hasattr(card, 'points'):
+                    points = card.points
+                elif isinstance(card, dict) and 'points' in card:
+                    points = card['points']
+                
+                # Extract costs and calculate total
+                costs = {}
+                if hasattr(card, 'costs'):
+                    costs = card.costs
+                elif isinstance(card, dict) and 'costs' in card:
+                    costs = card['costs']
+                
+                # Sum up all costs
+                for color, cost in costs.items():
+                    total_cost += cost
+                
+                # Calculate value ratio (adding 1 to points to value cards with prestige)
+                # Avoid division by zero
+                if total_cost > 0:
+                    value_ratio = (points + 1) / total_cost
+                    if value_ratio > best_value_ratio:
+                        best_value_ratio = value_ratio
+                        best_card_move = move_idx
+                elif points > 0:  # Free card with points
+                    return move_idx  # Get it immediately
+        
+        # If we found a good card to buy, do it
+        if best_card_move is not None:
+            return best_card_move
+        
+        # STRATEGY 3: Take gems that help obtain the cheapest available card
+        # First, identify the cheapest card we might want
+        cheapest_card = None
+        cheapest_cost = float('inf')
+        
+        # Check cards in the tableau and potentially noble cards
+        available_cards = []
+        
+        # Extract cards from the game state - assuming the implementation details
+        for tier in range(3):  # Usually 3 tiers in Splendor
+            if hasattr(game_state, 'visible_cards') and tier < len(game_state.visible_cards):
+                available_cards.extend(game_state.visible_cards[tier])
+            elif hasattr(game_state, 'cards') and tier < len(game_state.cards):
+                available_cards.extend(game_state.cards[tier])
+        
+        player = game_state.players[current_player]
+        player_gems = {}
+        
+        # Get player's current gems
+        if hasattr(player, 'gems'):
+            player_gems = player.gems
+        
+        # Find the card that requires the fewest additional gems
+        for card in available_cards:
+            if card is None:
+                continue
+                
+            # Skip if we don't have proper card format
+            if not hasattr(card, 'costs') and (not isinstance(card, dict) or 'costs' not in card):
+                continue
+                
+            # Extract card costs
+            costs = card.costs if hasattr(card, 'costs') else card['costs']
+            
+            # Calculate additional gems needed
+            additional_gems_needed = 0
+            for color, cost in costs.items():
+                player_has = player_gems.get(color, 0)
+                if cost > player_has:
+                    additional_gems_needed += (cost - player_has)
+            
+            if additional_gems_needed < cheapest_cost:
+                cheapest_cost = additional_gems_needed
+                cheapest_card = card
+        
+        # If we identified a desired card, take gems that help get it
+        if cheapest_card is not None and take_gems_moves:
+            # Extract the costs of the cheapest card
+            costs = cheapest_card.costs if hasattr(cheapest_card, 'costs') else cheapest_card['costs']
+            
+            # Find gems we need
+            gems_needed = {}
+            for color, cost in costs.items():
+                player_has = player_gems.get(color, 0)
+                if cost > player_has:
+                    gems_needed[color] = cost - player_has
+            
+            # Score each take_gems move based on how many needed gems it provides
+            best_take_move = None
+            best_take_score = -1
+            
+            for move_idx in take_gems_moves:
+                move_details = valid_moves_mapping[move_idx]
+                # Assuming take_gems move format: ('take_gems', {color: count, ...})
+                gems_to_take = move_details[1] if len(move_details) > 1 else {}
+                
+                take_score = 0
+                for color, count in gems_to_take.items():
+                    if color in gems_needed:
+                        take_score += min(count, gems_needed[color])
+                
+                if take_score > best_take_score:
+                    best_take_score = take_score
+                    best_take_move = move_idx
+            
+            if best_take_move is not None:
+                return best_take_move
+        
+        # STRATEGY 4: If we can't buy a good card or take useful gems, reserve a high-point card
+        if reserve_moves:
+            best_reserve_move = None
+            highest_points = -1
+            
+            for move_idx in reserve_moves:
+                move_details = valid_moves_mapping[move_idx]
+                # Reserve move format: ('reserve', card_details)
+                card = move_details[1] if len(move_details) > 1 else None
+                
+                if card:
+                    points = 0
+                    if hasattr(card, 'points'):
+                        points = card.points
+                    elif isinstance(card, dict) and 'points' in card:
+                        points = card['points']
+                    
+                    if points > highest_points:
+                        highest_points = points
+                        best_reserve_move = move_idx
+            
+            if best_reserve_move is not None:
+                return best_reserve_move
+        
+        # If all else fails, just take any gems or random action
+        if take_gems_moves:
+            return take_gems_moves[0]
+        elif buy_moves:
+            return buy_moves[0]
+        elif reserve_moves:
+            return reserve_moves[0]
+        
+        # Fallback to first valid move if no clear strategy
         return valid_moves[0]
 
 
@@ -127,9 +322,6 @@ def evaluate_vs_greedy(model_path, num_games=10, swap_positions=False, verbose=T
                         print(f"Turn {turn_count}: Agent selects action: {env.valid_moves_mapping[action]}")
                 else:
                     # Greedy bot's turn
-                    print("DEBUG: Greedy bot's turn")
-                    print(f"DEBUG: Number of valid moves: {len(valid_moves)}")
-                    # Pass the environment's game state directly
                     action = greedy_bot.get_action(state, env.valid_moves_mapping, game_state=env.game_state)
                     
                     if verbose:
@@ -138,10 +330,6 @@ def evaluate_vs_greedy(model_path, num_games=10, swap_positions=False, verbose=T
             except Exception as e:
                 # Log invalid action attempt
                 invalid_attempts += 1
-                print(f"DEBUG: Exception in action selection: {e}")
-                print(f"DEBUG: Exception type: {type(e)}")
-                import traceback
-                traceback.print_exc()
                 if isinstance(e, ValueError) and "Invalid action" in str(e):
                     error_detail = str(e).split('. ')[0]  # Extract first part of error message
                     stats["invalid_actions_detail"][error_detail] += 1
