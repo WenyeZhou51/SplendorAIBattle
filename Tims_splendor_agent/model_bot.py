@@ -99,136 +99,114 @@ class ModelBotAI:
         self.output_dim = output_dim
         
         # Load the model
-        try:
-            if model_path:
-                print(f"Loading model from {model_path}")
+        if model_path:
+            print(f"Loading model from {model_path}")
+            
+            if not os.path.exists(model_path):
+                raise FileNotFoundError(f"Model file not found: {model_path}")
                 
+            try:
+                # Try to load the model
+                model_dict = torch.load(model_path, map_location=self.device)
+                
+                # Check what type of file we have
+                if isinstance(model_dict, torch.nn.Module):
+                    # It's a full model
+                    self.model = GenericModelWrapper(model_dict).to(self.device)
+                    print("Loaded full model directly")
+                    self.model.eval()
+                    return
+                
+                # Special case for files with network and optimizer keys
+                if isinstance(model_dict, dict) and 'network' in model_dict and 'optimizer' in model_dict:
+                    raise ValueError("Model file contains network and optimizer keys but not a state dict that can be loaded directly")
+                
+                # It's some kind of state dict
+                if isinstance(model_dict, dict) and 'state_dict' in model_dict:
+                    # It's a checkpoint with state_dict
+                    model_state_dict = model_dict['state_dict']
+                else:
+                    # Assume it's a raw state dict
+                    model_state_dict = model_dict
+                
+                # Handle special case where the state dict has 'network' key
+                if isinstance(model_state_dict, dict) and 'network' in model_state_dict and isinstance(model_state_dict['network'], dict):
+                    print("Found network key in state_dict, using it directly")
+                    model_state_dict = model_state_dict['network']
+                
+                # Try to load with ActorCritic structure
                 try:
-                    # Try to load the model
-                    model_dict = torch.load(model_path, map_location=self.device)
+                    # Try to import ActorCritic for backward compatibility
+                    from Tims_splendor_agent.ppo_agent import ActorCritic
+                    base_model = ActorCritic(input_dim=input_dim, output_dim=output_dim).to(self.device)
                     
-                    # Check what type of file we have
-                    if isinstance(model_dict, torch.nn.Module):
-                        # It's a full model
-                        self.model = GenericModelWrapper(model_dict).to(self.device)
-                        print("Loaded full model directly")
-                        self.model.eval()
-                        return
-                    
-                    # Special case for files with network and optimizer keys
-                    if isinstance(model_dict, dict) and 'network' in model_dict and 'optimizer' in model_dict:
-                        print("Found checkpoint with network and optimizer keys - creating new model")
-                        # Create a simple network from scratch
-                        base_model = SimpleNetwork(input_dim, output_dim).to(self.device)
-                        self.model = GenericModelWrapper(base_model).to(self.device)
-                        self.model.eval()
-                        print("Created new model with the right dimensions")
-                        return
-                    
-                    # It's some kind of state dict
-                    if isinstance(model_dict, dict) and 'state_dict' in model_dict:
-                        # It's a checkpoint with state_dict
-                        model_state_dict = model_dict['state_dict']
-                    else:
-                        # Assume it's a raw state dict
-                        model_state_dict = model_dict
-                    
-                    # Handle special case where the state dict has 'network' key
-                    if isinstance(model_state_dict, dict) and 'network' in model_state_dict and isinstance(model_state_dict['network'], dict):
-                        print("Found network key in state_dict, using it directly")
-                        model_state_dict = model_state_dict['network']
-                    
-                    # Try to load with ActorCritic structure
+                    # Try to load the state dict
                     try:
-                        # Try to import ActorCritic for backward compatibility
-                        from Tims_splendor_agent.ppo_agent import ActorCritic
-                        base_model = ActorCritic(input_dim=input_dim, output_dim=output_dim).to(self.device)
+                        base_model.load_state_dict(model_state_dict)
+                        print("Successfully loaded state dict with ActorCritic model")
+                    except RuntimeError as e:
+                        # Try adjusted state dict keys
+                        adjusted_state_dict = {k.replace('module.', ''): v for k, v in model_state_dict.items()}
+                        try:
+                            base_model.load_state_dict(adjusted_state_dict)
+                            print("Successfully loaded adjusted state dict with ActorCritic model")
+                        except RuntimeError:
+                            raise RuntimeError(f"Could not load state dict with standard adjustments: {e}")
+                except (ImportError, RuntimeError) as e:
+                    print(f"Could not load with ActorCritic: {e}")
+                    
+                    # If the state dict has keys that match typical actor-critic structure
+                    if all(k in model_state_dict for k in ['shared.0.weight', 'actor.weight']):
+                        print("Detected actor-critic structure in state dict")
+                        # Create a compatible model structure
+                        class ActorCriticModel(torch.nn.Module):
+                            def __init__(self, input_dim, output_dim):
+                                super(ActorCriticModel, self).__init__()
+                                self.shared = torch.nn.Sequential(
+                                    torch.nn.Linear(input_dim, 256),
+                                    torch.nn.ReLU(),
+                                    torch.nn.Linear(256, 256),
+                                    torch.nn.ReLU()
+                                )
+                                self.actor = torch.nn.Linear(256, output_dim)
+                                self.critic = torch.nn.Linear(256, 1)
+                            
+                            def forward(self, x):
+                                shared_features = self.shared(x)
+                                action_probs = torch.nn.functional.softmax(self.actor(shared_features), dim=-1)
+                                value = self.critic(shared_features)
+                                return action_probs, value
                         
-                        # Try to load the state dict
+                        base_model = ActorCriticModel(input_dim, output_dim).to(self.device)
+                        
+                        # Try to load the state dict, adjusting keys if needed
                         try:
                             base_model.load_state_dict(model_state_dict)
-                            print("Successfully loaded state dict with ActorCritic model")
-                        except RuntimeError as e:
-                            print(f"Could not load state dict directly: {e}")
-                            # Try adjusted state dict keys
+                            print("Successfully loaded state dict with ActorCriticModel")
+                        except RuntimeError:
+                            # Try again with adjusted state_dict keys
                             adjusted_state_dict = {k.replace('module.', ''): v for k, v in model_state_dict.items()}
                             try:
                                 base_model.load_state_dict(adjusted_state_dict)
-                                print("Successfully loaded adjusted state dict with ActorCritic model")
-                            except RuntimeError:
-                                raise RuntimeError("Could not load state dict with standard adjustments")
-                    except (ImportError, RuntimeError) as e:
-                        print(f"Could not load with ActorCritic: {e}")
+                                print("Successfully loaded adjusted state dict with ActorCriticModel")
+                            except RuntimeError as e:
+                                raise RuntimeError(f"Could not load with ActorCriticModel: {e}")
+                    else:
+                        # Unable to load state dict - raise error
+                        raise ValueError("State dict format is incompatible with known model architectures")
                         
-                        # If the state dict has keys that match typical actor-critic structure
-                        if all(k in model_state_dict for k in ['shared.0.weight', 'actor.weight']):
-                            print("Detected actor-critic structure in state dict")
-                            # Create a compatible model structure
-                            class ActorCriticModel(torch.nn.Module):
-                                def __init__(self, input_dim, output_dim):
-                                    super(ActorCriticModel, self).__init__()
-                                    self.shared = torch.nn.Sequential(
-                                        torch.nn.Linear(input_dim, 256),
-                                        torch.nn.ReLU(),
-                                        torch.nn.Linear(256, 256),
-                                        torch.nn.ReLU()
-                                    )
-                                    self.actor = torch.nn.Linear(256, output_dim)
-                                    self.critic = torch.nn.Linear(256, 1)
-                                
-                                def forward(self, x):
-                                    shared_features = self.shared(x)
-                                    action_probs = torch.nn.functional.softmax(self.actor(shared_features), dim=-1)
-                                    value = self.critic(shared_features)
-                                    return action_probs, value
-                            
-                            base_model = ActorCriticModel(input_dim, output_dim).to(self.device)
-                            
-                            # Try to load the state dict, adjusting keys if needed
-                            try:
-                                base_model.load_state_dict(model_state_dict)
-                                print("Successfully loaded state dict with ActorCriticModel")
-                            except RuntimeError:
-                                # Try again with adjusted state_dict keys
-                                adjusted_state_dict = {k.replace('module.', ''): v for k, v in model_state_dict.items()}
-                                try:
-                                    base_model.load_state_dict(adjusted_state_dict)
-                                    print("Successfully loaded adjusted state dict with ActorCriticModel")
-                                except RuntimeError as e:
-                                    print(f"Could not load with ActorCriticModel: {e}")
-                                    # Fall back to creating a new model
-                                    base_model = SimpleNetwork(input_dim, output_dim).to(self.device)
-                                    print("Created new model with the right dimensions")
-                        else:
-                            # Unable to load state dict - create a new model
-                            print("State dict format is incompatible, creating new model")
-                            base_model = SimpleNetwork(input_dim, output_dim).to(self.device)
-                            
-                    # Wrap the model
-                    self.model = GenericModelWrapper(base_model).to(self.device)
-                    self.model.eval()
-                    print("Model initialized")
-                        
-                except Exception as e:
-                    print(f"Error during model loading: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    # Fall back to a simple model
-                    print("Falling back to new model with correct dimensions")
-                    base_model = SimpleNetwork(input_dim, output_dim).to(self.device)
-                    self.model = GenericModelWrapper(base_model).to(self.device)
-                    self.model.eval()
-            else:
-                print("No model path provided, initializing with random weights")
-                # Create a simple model with the expected input/output dimensions
-                base_model = SimpleNetwork(input_dim, output_dim).to(self.device)
-                self.model = GenericModelWrapper(base_model)
+                # Wrap the model
+                self.model = GenericModelWrapper(base_model).to(self.device)
                 self.model.eval()
-        except Exception as e:
-            print(f"ERROR: Could not load model: {e}")
-            import traceback
-            traceback.print_exc()
-            raise RuntimeError(f"Failed to load model: {e}")
+                print("Model initialized")
+                    
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                raise RuntimeError(f"Failed to load model from {model_path}: {e}")
+        else:
+            # No model path, so we can't load anything
+            raise ValueError("No model path provided. A valid model path is required.")
     
     def make_move(self, state):
         """Make a move using the neural network model"""
