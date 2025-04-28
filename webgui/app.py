@@ -13,27 +13,53 @@ sys.path.append(os.path.join(parent_dir, 'Tims_splendor_agent'))
 
 from lapidary.game import GameState, Card, Noble
 from lapidary.data import colours as colors
-from Tims_splendor_agent.model_bot import ModelBotAI
+from model_adapters import get_adapter, MODEL_ADAPTERS
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
-# Initialize the model bot - default to the PPO model for backward compatibility
+# Initialize the model adapter - default to the PPO model for backward compatibility
 default_model_path = os.path.join(parent_dir, 'Tims_splendor_agent', 'models', 'ppo_checkpoint_final.pt')
-model_bot = None
+model_adapter = None
+current_model_info = {
+    "path": default_model_path,
+    "type": "ppo",
+    "input_dim": 2300,
+    "output_dim": 100,
+    "status": "Not loaded"
+}
 
 # For configuring the model path via environment variable
 MODEL_PATH = os.environ.get('SPLENDOR_MODEL_PATH', default_model_path)
+MODEL_TYPE = os.environ.get('SPLENDOR_MODEL_TYPE', 'ppo')
 
 try:
-    model_bot = ModelBotAI(model_path=MODEL_PATH, input_dim=2300, output_dim=100)
-    print(f"Successfully loaded model from {MODEL_PATH}")
+    # Try to load the model with the appropriate adapter
+    model_adapter = get_adapter(
+        model_type=MODEL_TYPE,
+        model_path=MODEL_PATH,
+        input_dim=2300,
+        output_dim=100
+    )
+    model_adapter.load_model()
+    current_model_info = {
+        "path": MODEL_PATH,
+        "type": MODEL_TYPE,
+        "input_dim": 2300,
+        "output_dim": 100,
+        "status": "Loaded"
+    }
+    print(f"Successfully loaded {MODEL_TYPE} model from {MODEL_PATH}")
 except Exception as e:
     print(f"Error loading model: {e}")
-    print("Using untrained model")
-    model_bot = ModelBotAI(input_dim=2300, output_dim=100)
+    import traceback
+    traceback.print_exc()
+    # Set model adapter to None
+    model_adapter = None
+    current_model_info["status"] = f"Error: {str(e)}"
+    print("WARNING: No model is available. The Model Bot will not work until a valid model is loaded.")
 
 # For backward compatibility
-ppo_bot = model_bot
+ppo_bot = model_adapter
 
 def card_error_handler(func):
     """Decorator to handle errors in card conversion"""
@@ -122,12 +148,18 @@ def dict_to_noble(noble_dict):
 def index():
     return send_from_directory('.', 'index.html')
 
-@app.route('/api/ppo_move', methods=['POST'])
-def ppo_move():
-    """API endpoint for getting a move from the model agent (kept as ppo_move for backward compatibility)"""
-    print("\n==== Model Bot Move Request ====")
+@app.route('/api/model_move', methods=['POST'])
+def model_move():
+    """API endpoint for getting a move from any model agent"""
+    print("\n==== Model Move Request ====")
     start_time = time.time()
     data = request.json
+    
+    # Check if model adapter is available
+    if model_adapter is None:
+        return jsonify({
+            'error': 'No model is loaded. Please load a valid model using the "Load Model" button before requesting a move.'
+        }), 400
     
     try:
         print(f"Current player in request: {data['current_player_index'] + 1}")
@@ -259,20 +291,20 @@ def ppo_move():
         # Enable caching of state copies to speed up move evaluation
         game_state._cached_copies = {}
         
-        # Get moves from the model bot
-        print(f"Getting model bot move for player {game_state.current_player_index + 1}")
+        # Get moves from the model adapter
+        print(f"Getting model move for player {game_state.current_player_index + 1}")
         try:
             # First modify the game state to disable verification to avoid ipdb errors
             game_state._verify_state = False  # Add this attribute to skip verification
             
-            # Get the move from the model bot (using ppo_bot for backward compatibility)
-            selected_move, _ = ppo_bot.make_move(game_state)
-            print(f"Model bot selected move: {selected_move}")
+            # Get the move from the model adapter
+            selected_move, confidence = model_adapter.predict_move(game_state, valid_moves)
+            print(f"Model selected move: {selected_move} (confidence: {confidence})")
         except Exception as e:
-            print(f"Error getting move from model bot: {e}")
+            print(f"Error getting move from model adapter: {e}")
             import traceback
             traceback.print_exc()
-            return jsonify({'error': f'Model bot error: {str(e)}'}), 500
+            return jsonify({'error': f'Model prediction error: {str(e)}'}), 500
         
         # Find the index of the selected move in the frontend moves list
         move_index = -1
@@ -298,7 +330,39 @@ def ppo_move():
         
         # If we still couldn't find a match, return an error
         if move_index == -1:
-            return jsonify({'error': 'Failed to match model move with frontend moves'}), 400
+            # Create a more detailed error message
+            move_details = f"Model selected move: {selected_move}"
+            
+            # Get a list of available move types from frontend_moves
+            avail_move_types = {}
+            for i, move in enumerate(frontend_moves):
+                move_type = move['action']
+                if move_type not in avail_move_types:
+                    avail_move_types[move_type] = []
+                
+                # Add a simplified description of the move
+                if move_type == 'gems':
+                    gems_desc = ", ".join([f"{color}: {count}" for color, count in move['gems'].items() if count > 0])
+                    avail_move_types[move_type].append(f"[{i}] {gems_desc}")
+                elif move_type == 'reserve':
+                    avail_move_types[move_type].append(f"[{i}] tier: {move.get('tier')}, index: {move.get('index')}")
+                elif move_type == 'buy_available':
+                    avail_move_types[move_type].append(f"[{i}] tier: {move.get('tier')}, index: {move.get('index')}")
+                elif move_type == 'buy_reserved':
+                    avail_move_types[move_type].append(f"[{i}] index: {move.get('index')}")
+            
+            # Format the available move types
+            move_types_list = []
+            for move_type, moves in avail_move_types.items():
+                count = len(moves)
+                examples = moves[:3]  # Only show up to 3 examples per type
+                if count > 3:
+                    examples.append(f"... {count-3} more")
+                move_types_list.append(f"{move_type} ({count}): {', '.join(examples)}")
+            
+            error_msg = f"Failed to match model move with frontend moves.\n{move_details}\nAvailable frontend moves:\n" + "\n".join(move_types_list)
+            
+            return jsonify({'error': error_msg}), 400
         
         elapsed = time.time() - start_time
         print(f"Model move processing took {elapsed:.2f} seconds")
@@ -310,6 +374,11 @@ def ppo_move():
         traceback.print_exc()
         print("ERROR in model move handler:", str(e))
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ppo_move', methods=['POST'])
+def ppo_move():
+    """Legacy endpoint for backward compatibility - redirects to model_move"""
+    return model_move()
 
 def _moves_match(frontend_move, model_move):
     """
@@ -458,7 +527,7 @@ def _moves_partially_match(frontend_move, model_move):
 @app.route('/api/set_model', methods=['POST'])
 def set_model():
     """API endpoint for changing the model at runtime"""
-    global model_bot, ppo_bot
+    global model_adapter, current_model_info
     
     data = request.json
     
@@ -466,30 +535,77 @@ def set_model():
         return jsonify({'error': 'Missing model_path parameter'}), 400
         
     model_path = data['model_path']
+    model_type = data.get('model_type', 'ppo')  # Default to ppo for backward compatibility
     input_dim = data.get('input_dim', 2300)
     output_dim = data.get('output_dim', 100)
     
+    # Validate the model path
+    if not os.path.exists(model_path):
+        return jsonify({'error': f'Model file not found: {model_path}'}), 404
+    
+    # Validate the model type
+    if model_type not in MODEL_ADAPTERS:
+        return jsonify({
+            'error': f'Unknown model type: {model_type}. Available types: {list(MODEL_ADAPTERS.keys())}'
+        }), 400
+    
     try:
-        # Load the new model
-        new_model_bot = ModelBotAI(model_path=model_path, input_dim=input_dim, output_dim=output_dim)
+        # Create a new model adapter with the specified type
+        adapter = get_adapter(
+            model_type=model_type,
+            model_path=model_path,
+            input_dim=input_dim,
+            output_dim=output_dim
+        )
         
-        # If successful, update the global model bot
-        model_bot = new_model_bot
-        ppo_bot = new_model_bot  # For backward compatibility
+        # Load the model
+        adapter.load_model()
+        
+        # If successful, update the global model adapter
+        model_adapter = adapter
+        current_model_info = {
+            "path": model_path,
+            "type": model_type,
+            "input_dim": input_dim,
+            "output_dim": output_dim,
+            "status": "Loaded"
+        }
         
         return jsonify({
             'success': True, 
             'message': f'Model successfully loaded from {model_path}',
-            'model_info': {
-                'path': model_path,
-                'input_dim': input_dim,
-                'output_dim': output_dim
-            }
+            'model_info': adapter.get_info()
         })
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return jsonify({'error': f'Failed to load model: {str(e)}'}), 500
+        error_message = f'Failed to load model: {str(e)}'
+        print(f"ERROR: {error_message}")
+        current_model_info["status"] = f"Error: {str(e)}"
+        return jsonify({'error': error_message}), 500
+
+@app.route('/api/get_model_info', methods=['GET'])
+def get_model_info():
+    """API endpoint to get information about the currently loaded model"""
+    global model_adapter, current_model_info
+    
+    if model_adapter is not None:
+        # Get model info from the adapter
+        info = model_adapter.get_info()
+    else:
+        info = {
+            "model_type": "None",
+            "model_path": current_model_info.get("path", ""),
+            "input_dim": current_model_info.get("input_dim", 2300),
+            "output_dim": current_model_info.get("output_dim", 100),
+            "loaded": False,
+            "status": current_model_info.get("status", "Not loaded")
+        }
+    
+    # Add available model types
+    info["available_model_types"] = list(MODEL_ADAPTERS.keys())
+    
+    return jsonify(info)
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0') 

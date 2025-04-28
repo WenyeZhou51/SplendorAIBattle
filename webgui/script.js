@@ -696,7 +696,7 @@ Vue.component('ai-move-status', {
     <div>
         <h3>AI Player {{ player_index + 1 }} thinking...</h3>
         <p>Evaluating {{ num_possible_moves }} possible moves</p>
-        <p v-if="ppo_bot_status" class="ppo-error">{{ ppo_bot_status }}</p>
+        <div v-if="ppo_bot_status" class="ppo-error">{{ ppo_bot_status }}</div>
     </div>
 </div>
 `
@@ -898,6 +898,7 @@ var app = new Vue({
         model_output_dim: 100,
         model_status: '',
         model_status_class: '',
+        model_type: 'ppo', // Default to PPO for backward compatibility
     },
     methods: {
         testChangeGems: function() {
@@ -1145,7 +1146,7 @@ var app = new Vue({
             console.groupEnd();
         },
         fetchPPOBotMove: function() {
-            console.group("PPO Bot Move - Start");
+            console.group("Model Bot Move - Start");
             console.log("Current player:", this.state.current_player_index + 1);
             
             const moves = this.state.get_valid_moves();
@@ -1157,7 +1158,7 @@ var app = new Vue({
             
             // Safety check - if no valid moves, we can't proceed
             if (moves.length === 0) {
-                console.error("CRITICAL ERROR: No valid moves available for PPO bot!");
+                console.error("CRITICAL ERROR: No valid moves available for Model bot!");
                 this.ppo_bot_status = 'Error: No valid moves available!';
                 console.groupEnd();
                 return;
@@ -1185,10 +1186,10 @@ var app = new Vue({
                 });
                 
                 // Make the API call with timeout
-                console.log('Fetching PPO bot move from server...');
+                console.log('Fetching model bot move from server...');
                 
                 Promise.race([
-                    fetch('http://localhost:5000/api/ppo_move', {
+                    fetch('http://localhost:5000/api/model_move', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json'
@@ -1215,7 +1216,7 @@ var app = new Vue({
                     }
                     
                     const move_index = data.move_index;
-                    console.log('PPO server responded with move index:', move_index);
+                    console.log('Model bot move is', move_index);
                     
                     // Make sure the move index is valid
                     if (move_index >= 0 && move_index < moves.length) {
@@ -1246,7 +1247,7 @@ var app = new Vue({
                     console.groupEnd();
                 })
                 .catch(error => {
-                    console.error('Error getting PPO move from server:', error);
+                    console.error('Error getting model bot move from server:', error);
                     console.error('Error type:', error.constructor.name);
                     console.error('Error stack:', error.stack);
                     this.ppo_bot_status = `PPO Bot Error: ${error.message}`;
@@ -1498,6 +1499,14 @@ var app = new Vue({
             case 'aggro':
                 return new AggroAI();
             case 'ppo':
+                // If the ppo bot is null, set an error message
+                if (!ppo_bot) {
+                    this.model_status = 'Error: No model is loaded. Please load a valid model before using the Model Bot.';
+                    this.model_status_class = 'error';
+                    setTimeout(() => {
+                        alert('No model is loaded. Please load a valid model using the "Load Model" button before using the Model Bot.');
+                    }, 100);
+                }
                 return 'ppo'; // Keep 'ppo' for backward compatibility, but this now uses the ModelBotAI
             }
             console.log('unrecognised bot type', botType);
@@ -1509,8 +1518,16 @@ var app = new Vue({
             this.model_status = 'Loading...';
             this.model_status_class = 'loading';
             
+            // Validate that a model path was provided
+            if (!this.model_path) {
+                this.model_status = 'Error: No model path provided. Please enter a valid path to a .pt file.';
+                this.model_status_class = 'error';
+                return;
+            }
+            
             const modelConfig = {
                 model_path: this.model_path,
+                model_type: this.model_type, // New parameter for model type
                 input_dim: this.model_input_dim,
                 output_dim: this.model_output_dim
             };
@@ -1522,11 +1539,23 @@ var app = new Vue({
                 },
                 body: JSON.stringify(modelConfig)
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(data => {
+                        throw new Error(data.error || `Server error: ${response.status}`);
+                    });
+                }
+                return response.json();
+            })
             .then(data => {
                 if (data.success) {
                     this.model_status = 'Success: ' + data.message;
                     this.model_status_class = 'success';
+                    
+                    // Reset the current game if either player is using the model bot
+                    if (this.player1_bot_type === 'ppo' || this.player2_bot_type === 'ppo') {
+                        this.reset();
+                    }
                 } else {
                     this.model_status = 'Error: ' + (data.error || 'Unknown error');
                     this.model_status_class = 'error';
@@ -1537,6 +1566,47 @@ var app = new Vue({
                 this.model_status = 'Error: ' + error.message;
                 this.model_status_class = 'error';
             });
+        },
+        // Add a new method to get model info from server
+        getModelInfo: function() {
+            fetch('/api/get_model_info')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`Error fetching model info: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    console.log('Model info:', data);
+                    
+                    // Update model info fields if available
+                    if (data.model_path) {
+                        this.model_path = data.model_path;
+                    }
+                    
+                    if (data.input_dim) {
+                        this.model_input_dim = data.input_dim;
+                    }
+                    
+                    if (data.output_dim) {
+                        this.model_output_dim = data.output_dim;
+                    }
+                    
+                    if (data.model_type) {
+                        this.model_type = data.model_type;
+                    }
+                    
+                    // Update status message
+                    if (data.status) {
+                        this.model_status = data.status;
+                        this.model_status_class = data.loaded ? 'success' : 'error';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error getting model info:', error);
+                    this.model_status = `Error: ${error.message}`;
+                    this.model_status_class = 'error';
+                });
         },
     },
     computed: {
@@ -1570,16 +1640,26 @@ var app = new Vue({
         },
         indexed_players: function() {
             var players = {};
-            for (let i = 0; i < this.num_players; i++) {
-                players[i] = this.players[i];
+            for (var i = 0; i < this.state.players.length; i++) {
+                players[i] = this.state.players[i];
             }
             return players;
         },
         show_card_buttons: function() {
-            return this.game_mode === 'human_vs_ai' && this.player_type === 'human';
+            return this.game_mode === 'human_vs_ai' && 
+                   this.player_type === 'human' && 
+                   !this.discarding &&
+                   this.winner_index === null;
         },
         has_winner: function() {
             return !(this.winner_index === null);
+        },
+        human_player_index: function() {
+            return this.human_player_indices[0];
+        },
+        human_player_active: function() {
+            return this.game_mode === 'human_vs_ai' && 
+                   this.state.current_player_index === this.human_player_index;
         },
         last_move_description: {
             get: function() {
@@ -1628,10 +1708,10 @@ var app = new Vue({
         }
     },
     mounted: function() {
-        // Initialize with the selected game mode
-        this.reset();
+        // Get information about the currently loaded model when the component is mounted
+        this.getModelInfo();
         
-        // If we're in bot vs bot auto mode, start it right away
+        // If we're in bot vs bot auto mode, start the game
         if (this.game_mode === 'bot_vs_bot' && this.bot_advance_mode === 'auto') {
             this.schedule_auto_ai_move();
         }

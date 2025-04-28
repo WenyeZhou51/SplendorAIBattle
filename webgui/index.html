@@ -79,6 +79,14 @@
                   <label>Model Path:</label>
                   <input type="text" v-model="model_path" placeholder="/path/to/your/model.pt">
                 </div>
+                <div class="model-type-selector">
+                  <label>Model Type:</label>
+                  <select v-model="model_type">
+                    <option value="ppo">PPO (Standard)</option>
+                    <option value="parallel_ppo">Parallel PPO</option>
+                    <option value="generic">Generic</option>
+                  </select>
+                </div>
                 <div class="model-dimensions">
                   <label>Input Dim:</label>
                   <input type="number" v-model.number="model_input_dim" min="1">
